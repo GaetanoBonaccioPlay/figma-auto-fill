@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "The North Face",
+  "naming": {
+    "template": "{Nome}",
+    "start": 1
+  },
+  "primaryLanguage": "EN",
+  "languages": [
+    "EN",
+    "DE",
+    "FR",
+    "ES",
+    "NL",
+    "IT",
+    "PL",
+    "PT",
+    "SV",
+    "DA",
+    "CS"
+  ],
+  "sections": "none",
+  "glossary": [],
+  "confirmedMatches": []
+}

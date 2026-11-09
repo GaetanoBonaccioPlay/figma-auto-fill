@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Columbia",
+  "naming": {
+    "template": "{Nome}",
+    "start": 1
+  },
+  "primaryLanguage": "EN",
+  "languages": [
+    "EN",
+    "FR",
+    "DE",
+    "ES",
+    "IT"
+  ],
+  "sections": "none",
+  "glossary": [],
+  "confirmedMatches": []
+}

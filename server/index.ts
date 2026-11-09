@@ -1,8 +1,5 @@
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BRIDGE_PORT } from '../src/agent-protocol';
-import { BrandStore } from './brands';
 import { Bridge } from './bridge';
 import { createMcpServer } from './tools';
 
@@ -11,15 +8,13 @@ const log = (message: string): void => { process.stderr.write(`[figma-auto-fill]
 
 async function main(): Promise<void> {
   const port = Number(process.env.FIGMA_AUTOFILL_PORT ?? BRIDGE_PORT);
-  // Nel pacchetto .mcpb la cartella arriva da FIGMA_AUTOFILL_BRANDS_DIR; il ripiego serve per l'uso da sorgente.
-  const brandsDir = resolve(process.env.FIGMA_AUTOFILL_BRANDS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'brand-profiles'));
 
   const bridge = new Bridge({ port });
   await bridge.start();
   log(bridge.startError ?? `bridge in ascolto su ws://localhost:${port}`);
-  log(`profili brand in ${brandsDir}`);
+  log('profili brand: archivio del plugin (via bridge)');
 
-  const server = createMcpServer({ bridge, brands: new BrandStore(brandsDir) });
+  const server = createMcpServer({ bridge });
   await server.connect(new StdioServerTransport());
 
   // Il processo deve uscire davvero quando il client chiude: se restasse appeso terrebbe la porta.

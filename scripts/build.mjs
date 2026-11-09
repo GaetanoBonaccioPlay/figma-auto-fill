@@ -1,13 +1,31 @@
 import { build } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { loadBaseProfiles } from './base-profiles.mjs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 await mkdir('dist', { recursive: true });
+
+// Profili di base (ADR 0002): ogni file .json di brand-profiles/ viene validato e compilato nel plugin.
+// Un profilo non valido o un nome duplicato fanno fallire la build (scripts/base-profiles.mjs).
+await build({
+  entryPoints: ['src/profiles.ts'],
+  outfile: 'dist/profiles.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  logLevel: 'silent'
+});
+const { validateProfile } = await import(`${pathToFileURL(join(process.cwd(), 'dist/profiles.mjs')).href}?t=${Date.now()}`);
+const baseProfiles = await loadBaseProfiles('brand-profiles', validateProfile);
 await build({
   entryPoints: ['src/plugin.ts'],
   outfile: 'dist/code.js',
   bundle: true,
   format: 'iife',
   target: 'es2017',
+  define: { __BASE_PROFILES__: JSON.stringify(baseProfiles) },
   logLevel: 'info'
 });
 const uiBuild = await build({
@@ -69,6 +87,15 @@ await build({
   outExtension: { '.js': '.mjs' },
   bundle: true,
   packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  logLevel: 'silent'
+});
+await build({
+  entryPoints: ['src/profiles-ui.ts'],
+  outfile: 'dist/profiles-ui.mjs',
+  bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node20',

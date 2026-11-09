@@ -42,25 +42,26 @@ test('il pacchetto .mcpb ha manifest valido nei campi richiesti e un solo file s
   assert.deepEqual((await readdir(join(out, 'server'))), ['index.cjs']);
   assert.equal(manifest.server.entry_point, 'server/index.cjs');
   assert.ok(manifest.server.mcp_config.args[0].endsWith('/server/index.cjs'));
-  assert.equal(manifest.server.mcp_config.env.FIGMA_AUTOFILL_BRANDS_DIR, '${user_config.brands_dir}');
-  assert.equal(manifest.user_config.brands_dir.type, 'directory');
+  // ADR 0002: i Profili brand vivono nel plugin, il pacchetto non chiede più una cartella.
+  assert.equal(manifest.user_config, undefined);
+  assert.equal(manifest.server.mcp_config.env?.FIGMA_AUTOFILL_BRANDS_DIR, undefined);
 });
 
-test('il server impacchettato parte da solo: strumenti, bridge e cartella profili da variabile d\'ambiente', async () => {
-  const brands = join(build.dir, 'profili');
+test('il server impacchettato parte da solo: strumenti e bridge, e senza plugin i profili danno un errore esplicito', async () => {
   const transport = new StdioClientTransport({
     command: 'node', args: [join(build.dir, 'mcpb', 'server', 'index.cjs')],
-    env: { ...process.env, FIGMA_AUTOFILL_PORT: '39081', FIGMA_AUTOFILL_BRANDS_DIR: brands }, cwd: build.dir
+    env: { ...process.env, FIGMA_AUTOFILL_PORT: '39081' }, cwd: build.dir
   });
   const client = new Client({ name: 'test', version: '1.0.0' });
   await client.connect(transport);
   try {
-    assert.equal((await client.listTools()).tools.length, 15);
+    assert.equal((await client.listTools()).tools.length, 18);
     assert.deepEqual((await client.listPrompts()).prompts.map(prompt => prompt.name), ['localizza-frame']);
     const status = JSON.parse((await client.callTool({ name: 'bridge_status', arguments: {} })).content[0].text);
     assert.deepEqual([status.connected, status.error], [false, null]);
-    await client.callTool({ name: 'save_brand_profile', arguments: { name: 'Prova', primaryLanguage: 'IT' } });
-    assert.deepEqual(await readdir(brands), ['prova.json']);
+    const saved = await client.callTool({ name: 'save_brand_profile', arguments: { name: 'Prova' } });
+    assert.equal(saved.isError, true);
+    assert.match(saved.content[0].text, /plugin Figma Auto Fill non è collegato/);
   } finally { await client.close(); }
 });
 

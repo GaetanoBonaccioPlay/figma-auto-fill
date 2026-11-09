@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { WebSocket } from 'ws';
-import { BrandStore } from '../dist/server/brands.mjs';
+import { Archive, runProfileAction, validateProfile } from '../dist/profiles.mjs';
 import { Bridge } from '../dist/server/bridge.mjs';
 import { createMcpServer, todayStamp } from '../dist/server/tools.mjs';
 import { readCells, tempDir, writeFixture } from './helpers/xlsx.mjs';
@@ -40,18 +40,23 @@ function exportsFrom(payload, manual = {}) {
   return result;
 }
 
-// Plugin finto: risponde come farebbe il vero, con selezione, piano di generazione ed export correnti.
-function fakePlugin(bridge, state) {
+// Plugin finto: risponde come farebbe il vero, con selezione, piano di generazione, export correnti e archivio dei profili.
+// `current()` è lo stato del test in corso (sostituibile con connectPlugin); l'archivio resta lo stesso per tutto il test.
+function fakePlugin(bridge, current, archive) {
   const calls = [];
   const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}`);
   ws.on('open', () => ws.send(JSON.stringify({ hello: 'figma-auto-fill-plugin' })));
   ws.on('message', raw => {
     const request = JSON.parse(String(raw));
+    const state = current();
     calls.push(request);
     const reply = data => ws.send(JSON.stringify({ id: request.id, ok: true, data }));
-    if (request.command === 'snapshot') {
+    if (request.command === 'profiles') {
+      try { reply(runProfileAction(archive, request.payload).data); }
+      catch (error) { ws.send(JSON.stringify({ id: request.id, ok: false, error: error.message })); }
+    } else if (request.command === 'snapshot') {
       const generated = request.payload?.frameIds;
-      reply({ frames: [{ ...FRAME, ...(generated ? { existingTranslations: state.exports } : {}) }] });
+      reply({ frames: [{ ...(state.frame ?? FRAME), ...(generated ? { existingTranslations: state.exports } : {}) }] });
     } else if (request.command === 'ui-state') {
       if (state.ui) reply(state.ui);
       else ws.send(JSON.stringify({ id: request.id, ok: false, error: 'Questa versione del plugin non espone lo stato della UI' }));
@@ -66,12 +71,13 @@ function fakePlugin(bridge, state) {
   return { ws, calls };
 }
 
-async function setup() {
+const waitConnected = async bridge => { for (let i = 0; i < 100 && !bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10)); };
+
+async function setup({ plugin = true, bases = [] } = {}) {
   const { dir, cleanup } = await tempDir();
   const bridge = new Bridge({ port: 0 });
   await bridge.start();
-  const brands = new BrandStore(join(dir, 'brands'));
-  const server = createMcpServer({ bridge, brands, now: () => new Date(2026, 10, 9) });
+  const server = createMcpServer({ bridge, now: () => new Date(2026, 10, 9) });
   const client = new Client({ name: 'test', version: '1.0.0' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
@@ -80,12 +86,16 @@ async function setup() {
     const text = result.content[0].text;
     return { isError: Boolean(result.isError), text, data: result.isError ? null : JSON.parse(text) };
   };
-  const connectPlugin = async state => {
-    const plugin = fakePlugin(bridge, state);
-    for (let i = 0; i < 100 && !bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    return plugin;
+  const archive = new Archive(bases.map(validateProfile));
+  let state = { existing: [], exports: {} };
+  let fake = null;
+  const connectPlugin = async next => {
+    if (next) state = next;
+    if (!fake) { fake = fakePlugin(bridge, () => state, archive); await waitConnected(bridge); }
+    return fake;
   };
-  return { dir, bridge, call, client, connectPlugin, close: async () => { await client.close(); await bridge.close(); await cleanup(); } };
+  if (plugin) await connectPlugin();
+  return { dir, bridge, call, client, connectPlugin, archive, close: async () => { fake?.ws.close(); await client.close(); await bridge.close(); await cleanup(); } };
 }
 
 test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine previsto', async () => {
@@ -94,21 +104,22 @@ test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine 
     const tools = (await env.client.listTools()).tools.map(tool => tool.name);
     for (const name of ['bridge_status', 'get_selection', 'list_brand_profiles', 'get_brand_profile', 'save_brand_profile', 'export_brand_profile',
       'import_brand_profile', 'analyze_client_excel', 'match_selection', 'confirm_matches', 'generate_exports', 'write_updated_excel',
-      'list_empty_cells', 'save_ai_translations']) assert.ok(tools.includes(name), name);
+      'list_empty_cells', 'save_ai_translations', 'clear_brand', 'pending_profile_updates', 'apply_profile_updates']) assert.ok(tools.includes(name), name);
     const prompts = (await env.client.listPrompts()).prompts;
     assert.deepEqual(prompts.map(prompt => prompt.name), ['localizza-frame']);
     const prompt = await env.client.getPrompt({ name: 'localizza-frame', arguments: { brand: 'Acme' } });
     const text = prompt.messages[0].content.text;
     assert.match(text, /Brand: Acme/);
-    const order = ['BRAND', 'EXCEL CLIENTE', 'SELEZIONE', 'ABBINAMENTO', 'GENERAZIONE', 'EXCEL AGGIORNATO', 'TRADUZIONE AI'].map(label => text.indexOf(label));
+    const order = ['EXCEL CLIENTE', 'BRAND', 'SELEZIONE', 'ABBINAMENTO', 'GENERAZIONE', 'EXCEL AGGIORNATO', 'TRADUZIONE AI', 'REFERENCE'].map(label => text.indexOf(label));
     assert.ok(order.every((position, index) => position > (order[index - 1] ?? -1)), 'i passi devono comparire in ordine');
     assert.match(text, /SOLO se il designer vuole/);
     assert.match(text, /incongruenza.*NON decidere da solo.*fai una domanda/s);
+    assert.match(text, /senza Brand/);
   } finally { await env.close(); }
 });
 
-test('senza plugin: stato non collegato ed errore esplicito, senza brand non si analizza', async () => {
-  const env = await setup();
+test('senza plugin: stato non collegato ed errore esplicito; l\'analisi funziona senza Brand', async () => {
+  const env = await setup({ plugin: false });
   try {
     assert.equal((await env.call('bridge_status')).data.connected, false);
     const selection = await env.call('get_selection');
@@ -116,8 +127,12 @@ test('senza plugin: stato non collegato ed errore esplicito, senza brand non si 
     assert.match(selection.text, /non è collegato/);
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['Italiano'], ['a']] }]);
     const analysis = await env.call('analyze_client_excel', { path: excel });
-    assert.equal(analysis.isError, true);
-    assert.match(analysis.text, /Scegli prima il Brand/);
+    assert.equal(analysis.isError, false, analysis.text);
+    assert.equal(analysis.data.brand.decision, 'no-brand');
+    assert.ok(analysis.data.warnings.some(item => /Profili brand non disponibili.*non è collegato/.test(item)));
+    const profiles = await env.call('list_brand_profiles');
+    assert.equal(profiles.isError, true);
+    assert.match(profiles.text, /non è collegato/);
   } finally { await env.close(); }
 });
 
@@ -155,9 +170,10 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.deepEqual(analysis.analysis.languageColumns.map(item => `${item.letter}:${item.code}`), ['B:IT', 'C:EN', 'D:DE', 'E:FR']);
     assert.equal(analysis.sourceColumn.letter, 'B');
     assert.deepEqual(analysis.differences, { missingInExcel: [], extraInExcel: [] });
+    assert.equal(analysis.brand.decision, 'use-selected', 'il profilo appena salvato è selezionato nel plugin');
 
     // 3-4. Selezione e abbinamento
-    const plugin = await env.connectPlugin(state);
+    await env.connectPlugin(state);
     assert.equal((await env.call('bridge_status')).data.connected, true);
     assert.equal((await env.call('get_selection')).data.frames[0].textLayers.length, 3);
     const match = (await env.call('match_selection')).data;
@@ -242,7 +258,6 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     cells = await readCells(withAi.output, 'Campagna AW26');
     assert.equal(cells.text(2, 5), 'Découvrez la nouvelle collection');
     assert.equal(await hash(excel), original);
-    plugin.ws.close();
   } finally { await env.close(); }
 });
 
@@ -288,12 +303,9 @@ test('celle multi-livello: avviso e nessun abbinamento automatico', async () => 
       { id: 'b', key: 'sub', text: 'Sottotitolo sopra', markup: 'Sottotitolo sopra' }
     ] };
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['Italiano', 'English'], ['Titolo sopra\nSottotitolo sopra', 'Title\nSubtitle']] }]);
+    await env.connectPlugin({ existing: [], exports: {}, frame });
     await env.call('save_brand_profile', { name: 'Acme', primaryLanguage: 'IT' });
     await env.call('analyze_client_excel', { path: excel });
-    const ws = new WebSocket(`ws://127.0.0.1:${env.bridge.port}`);
-    ws.on('open', () => ws.send(JSON.stringify({ hello: 'figma-auto-fill-plugin' })));
-    ws.on('message', raw => { const r = JSON.parse(String(raw)); ws.send(JSON.stringify({ id: r.id, ok: true, data: { frames: [frame] } })); });
-    for (let i = 0; i < 100 && !env.bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10));
     const match = (await env.call('match_selection')).data;
     assert.equal(match.summary.multiLevel, 1);
     assert.equal(match.summary.exact, 0);
@@ -302,7 +314,6 @@ test('celle multi-livello: avviso e nessun abbinamento automatico', async () => 
     const generate = await env.call('generate_exports');
     assert.equal(generate.isError, true);
     assert.match(generate.text, /Nessun livello abbinato/);
-    ws.close();
   } finally { await env.close(); }
 });
 
@@ -402,12 +413,9 @@ test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non
       { id: 'd', key: '29 June 2022 18.00', text: '29 June 2022 18.00', markup: '29 June 2022 18.00' }
     ] };
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['English', 'French'], ['Acquista ora', 'Commander']] }]);
+    await env.connectPlugin({ existing: [], exports: {}, frame });
     await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR'] });
     await env.call('analyze_client_excel', { path: excel });
-    const ws = new WebSocket(`ws://127.0.0.1:${env.bridge.port}`);
-    ws.on('open', () => ws.send(JSON.stringify({ hello: 'figma-auto-fill-plugin' })));
-    ws.on('message', raw => { const r = JSON.parse(String(raw)); ws.send(JSON.stringify({ id: r.id, ok: true, data: { frames: [frame] } })); });
-    for (let i = 0; i < 100 && !env.bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10));
 
     const first = (await env.call('match_selection')).data;
     assert.deepEqual([first.summary.orphans, first.summary.excluded], [3, 0]);
@@ -432,7 +440,6 @@ test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non
     assert.match(invalid.text, /Espressione regolare non valida/);
     const removed = (await env.call('exclude_layers', { add: ['to:'], remove: ['TO:', 'reply to:'] })).data;
     assert.deepEqual(removed.ignoredLayers, ['re:^\\d{1,2} [a-z]+ \\d{4}', 'to:'], 'rimozione senza distinzione di maiuscole, aggiunta in coda');
-    ws.close();
   } finally { await env.close(); }
 });
 
@@ -492,5 +499,192 @@ test('l\'Excel originale non viene mai modificato, in nessun passo del dialogo n
     assert.equal((await env.call('write_updated_excel', { output_path: mine })).isError, false);
     await stillUntouched('copia con nome personalizzato');
     assert.equal((await readdir(env.dir)).some(name => name.includes('.tmp-')), false, 'nessun file temporaneo rimasto');
+  } finally { await env.close(); }
+});
+
+// ---------- PRD 0002: Profili brand come aiuto, non come vincolo ----------
+
+const CTA_FRAME = { ...FRAME, textLayers: [
+  { id: 'a', key: 'subject', text: 'Gear up for winter', markup: 'Gear up for winter' },
+  { id: 'b', key: 'cta', text: 'Shop now', markup: 'Shop now' }
+] };
+const columbiaRows = (sheet = 'Copy') => [{ name: sheet, rows: [
+  ['ID', 'Field', 'EN', 'FR', 'DE'],
+  ['001', 'Subject line', 'Gear up for winter', 'Équipez-vous', 'Rüste dich'],
+  ['002', 'Preheader', 'Free shipping', 'Livraison offerte', 'Kostenloser Versand'],
+  ['003', 'CTA', 'Shop now', 'Acheter', 'Jetzt kaufen'],
+  ['004', 'Footer', 'Unsubscribe', 'Se désabonner', 'Abmelden']
+] }];
+
+test('senza Brand: flusso completo fino all\'Excel aggiornato, fatti imparati nella sessione, poi reference salvata e riconosciuta', async () => {
+  const env = await setup();
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, frame: { ...CTA_FRAME, textLayers: [...CTA_FRAME.textLayers, { id: 'c', key: 'To:', text: 'To:', markup: 'To:' }] } });
+    const excel = await writeFixture(join(env.dir, 'Nike_AW26_final.xlsx'), columbiaRows('Copy'));
+    const analysis = (await env.call('analyze_client_excel', { path: excel })).data;
+    assert.equal(analysis.brand.decision, 'no-brand');
+    assert.equal(analysis.brand.recognition.outcome, 'none');
+    assert.match(analysis.brand.next, /senza Brand/);
+
+    const match = (await env.call('match_selection')).data;
+    assert.deepEqual([match.sourceChoice.column, match.sourceChoice.language, match.sourceChoice.reason], ['C', 'EN', 'dati']);
+    assert.equal(match.summary.exact, 2);
+    const excluded = (await env.call('exclude_layers', { add: ['To:'] })).data;
+    assert.equal(excluded.savedIn, 'sessione');
+    assert.equal((await env.call('match_selection')).data.summary.excluded, 1, 'l\'esclusione vale per la sessione');
+    const done = (await env.call('generate_exports')).data;
+    assert.equal(done.status, 'done');
+    assert.equal(done.usedSettings.source, 'default');
+    assert.equal((await env.call('write_updated_excel')).isError, false);
+    const empty = (await env.call('list_empty_cells')).data;
+    assert.match(empty.glossaryNote, /Nessun Brand/);
+
+    const pending = (await env.call('pending_profile_updates')).data;
+    assert.equal(pending.mode, 'create');
+    assert.equal(pending.suggestedName, 'Nike AW26');
+    assert.deepEqual(pending.includes.excelModel, { sheet: 'Copy', headers: 5, recurringLabels: 4 });
+    assert.equal(pending.includes.ignoredLayers, 1);
+    assert.deepEqual(env.archive.list(), [], 'senza il sì del designer non si salva nulla');
+
+    const created = (await env.call('apply_profile_updates', { name: 'Nike' })).data;
+    assert.equal(created.created, 'Nike');
+    const saved = env.archive.get('Nike');
+    assert.deepEqual(saved.ignoredLayers, ['To:']);
+    assert.deepEqual(saved.excelModels[0].labels, ['Subject line', 'Preheader', 'CTA', 'Footer']);
+    assert.ok(!JSON.stringify(saved.excelModels).includes('Gear up'), 'nessun testo del cliente nel Modello Excel');
+    assert.ok(!JSON.stringify(saved.excelModels).includes('001'), 'nessun ID nel Modello Excel');
+    assert.equal(env.archive.state.selected, 'Nike');
+
+    // la volta dopo, a plugin senza selezione, lo stesso formato con foglio rinominato viene riconosciuto
+    assert.equal((await env.call('clear_brand')).data.brand, null);
+    assert.equal(env.archive.state.selected, null, 'deselezionato anche nel plugin');
+    const next = (await env.call('analyze_client_excel', { path: await writeFixture(join(env.dir, 'nike2.xlsx'), columbiaRows('Copy v2')) })).data;
+    assert.equal(next.brand.decision, 'confirm-candidate');
+    assert.equal(next.brand.recognition.candidates[0].name, 'Nike');
+    assert.ok(next.brand.recognition.candidates[0].common.labels.includes('CTA'));
+  } finally { await env.close(); }
+});
+
+test('Colonna sorgente dai dati: l\'Excel vince sulla lingua principale del profilo, con avviso', async () => {
+  const env = await setup();
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, frame: { ...FRAME, textLayers: [{ id: 'a', key: 'cta', text: 'Jetzt kaufen', markup: 'Jetzt kaufen' }] } });
+    await env.call('save_brand_profile', { name: 'Acme', primaryLanguage: 'EN', languages: ['EN', 'DE'] });
+    const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['EN', 'DE', 'PT-BR'], ['Shop now', 'Jetzt kaufen', 'Compre agora']] }]);
+    const analysis = (await env.call('analyze_client_excel', { path: excel })).data;
+    assert.deepEqual(analysis.profileDifferences, ['nuova lingua PT_BR']);
+    const match = (await env.call('match_selection')).data;
+    assert.deepEqual([match.sourceChoice.column, match.sourceChoice.language, match.sourceChoice.differsFromProfile], ['B', 'DE', true]);
+    assert.ok(match.warnings.some(item => /diversa dalla lingua principale del profilo \(EN\)/.test(item)));
+    assert.equal(match.summary.exact, 1);
+    await env.call('generate_exports');
+    const pending = (await env.call('pending_profile_updates')).data;
+    assert.equal(pending.mode, 'update');
+    assert.deepEqual(pending.changes.newLanguages, ['PT_BR']);
+    assert.equal(env.archive.get('Acme').languages.includes('PT_BR'), false, 'il profilo non cambia senza un sì');
+  } finally { await env.close(); }
+});
+
+test('riconoscimento: candidato chiaro, candidati vicini, discrepanza con il profilo selezionato nel plugin', async () => {
+  const model = (sheet, labels) => ({ sheet, headerRow: 1, headers: [{ column: 1, header: 'Field' }, { column: 2, header: 'EN', code: 'EN' }], labels });
+  const bases = [
+    { version: 2, name: 'Columbia', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], excelModels: [model('Copy', ['Subject line', 'Preheader', 'CTA', 'Footer'])] },
+    { version: 2, name: 'The North Face', primaryLanguage: 'EN', languages: ['EN'], excelModels: [model('TNF', ['Headline', 'Body', 'Button', 'Legal'])] }
+  ];
+  const env = await setup({ bases });
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, frame: CTA_FRAME });
+    const columbia = await writeFixture(join(env.dir, 'col.xlsx'), [{ name: 'Copy', rows: [['Field', 'EN'], ['Subject line', 'Gear up for winter'], ['Preheader', 'x'], ['CTA', 'Shop now'], ['Footer', 'y']] }]);
+    const clear = (await env.call('analyze_client_excel', { path: columbia })).data;
+    assert.equal(clear.brand.decision, 'confirm-candidate');
+    assert.deepEqual(clear.brand.recognition.candidates.map(item => [item.name, item.origin]), [['Columbia', 'base']]);
+    assert.equal(clear.brand.sessionBrand, null, 'il server propone, non sceglie');
+
+    // co-branded: etichette di entrambi → due candidati vicini
+    const mixed = await writeFixture(join(env.dir, 'mix.xlsx'), [{ name: 'Mix', rows: [['Field', 'EN'], ['Subject line', 'a'], ['CTA', 'b'], ['Headline', 'c'], ['Button', 'd']] }]);
+    const ambiguous = (await env.call('analyze_client_excel', { path: mixed })).data;
+    assert.equal(ambiguous.brand.decision, 'choose-candidate');
+    assert.deepEqual(ambiguous.brand.recognition.candidates.map(item => item.name).sort(), ['Columbia', 'The North Face']);
+
+    // nel plugin è selezionato TNF ma l'Excel è Columbia: nessuna scelta automatica
+    env.archive.select('The North Face');
+    const discrepancy = (await env.call('analyze_client_excel', { path: columbia })).data;
+    assert.equal(discrepancy.brand.decision, 'discrepancy');
+    assert.equal(discrepancy.brand.selectedInPlugin, 'The North Face');
+    assert.equal(discrepancy.brand.sessionBrand, null);
+    assert.match(discrepancy.brand.next, /The North Face.*Columbia.*chiedi/);
+
+    // il designer sceglie Columbia: diventa il Brand della sessione e del plugin
+    const chosen = (await env.call('get_brand_profile', { name: 'Columbia' })).data;
+    assert.equal(chosen.origin, 'base');
+    assert.equal(env.archive.state.selected, 'Columbia');
+    const again = (await env.call('analyze_client_excel', { path: columbia })).data;
+    assert.equal(again.brand.decision, 'use-selected');
+  } finally { await env.close(); }
+});
+
+test('Profilo di base: fatti imparati e novità confermate diventano Aggiunte personali, il base resta intatto', async () => {
+  const bases = [{ version: 2, name: 'Columbia', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], naming: { template: '{Nome}', start: 1 } }];
+  const env = await setup({ bases });
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, frame: { ...CTA_FRAME, textLayers: [...CTA_FRAME.textLayers, { id: 'f', key: 'legal', text: 'Legal footer', markup: 'Legal footer' }] },
+      ui: { naming: { template: '{Nome}_{Lingua}', start: 1, date: '261109' }, baseNames: {}, sectionMode: 'none', targets: [], primary: 'EN' } });
+    await env.call('get_brand_profile', { name: 'Columbia' });
+    const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'Copy', rows: [['Field', 'EN', 'PT-BR'], ['Subject line', 'Gear up for winter', 'Prepare-se'], ['CTA', 'Shop now', 'Compre']] }]);
+    await env.call('analyze_client_excel', { path: excel });
+    await env.call('match_selection');
+    assert.equal((await env.call('exclude_layers', { add: ['Legal footer'] })).data.savedIn, 'profilo brand');
+    assert.deepEqual(env.archive.additions('Columbia').ignoredLayers, ['Legal footer'], 'fatto imparato salvato subito come aggiunta');
+    await env.call('match_selection');
+    const done = (await env.call('generate_exports', { languages: ['PT_BR'] })).data;
+    assert.match(done.profileSuggestion, /nome di output \{Nome\}_\{Lingua\}/);
+
+    const pending = (await env.call('pending_profile_updates')).data;
+    assert.deepEqual([pending.mode, pending.origin, pending.changes.excelModel], ['update', 'base', 'nuovo']);
+    assert.deepEqual(pending.changes.newLanguages, ['PT_BR']);
+    const applied = (await env.call('apply_profile_updates', { settings: true })).data;
+    assert.equal(applied.savedAs, 'Aggiunte personali');
+    const effective = env.archive.get('Columbia');
+    assert.deepEqual(effective.languages, ['EN', 'FR', 'DE', 'PT_BR']);
+    assert.equal(effective.naming.template, '{Nome}_{Lingua}');
+    assert.equal(effective.excelModels.length, 1);
+    assert.equal(env.archive.base('Columbia').languages.length, 3, 'il Profilo di base non cambia');
+  } finally { await env.close(); }
+});
+
+test('export e import via agente passano dal plugin: le novità su un Profilo di base diventano Aggiunte personali', async () => {
+  const bases = [{ version: 2, name: 'Columbia', revision: 3, primaryLanguage: 'EN', languages: ['EN', 'FR'] }];
+  const env = await setup({ bases });
+  try {
+    await env.call('save_brand_profile', { name: 'Columbia', languages: ['EN', 'FR', 'PT_BR'] });
+    const path = join(env.dir, 'columbia.brand.json');
+    const exported = (await env.call('export_brand_profile', { name: 'Columbia', path })).data;
+    assert.deepEqual(exported.origin, { base: 'Columbia', revision: 3 });
+    const file = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(file.profile.languages, ['EN', 'FR', 'PT_BR'], 'il file contiene il profilo completo');
+
+    // un collega con solo il Profilo di base importa il file
+    env.archive.clearAdditions('Columbia');
+    const imported = (await env.call('import_brand_profile', { path })).data;
+    assert.deepEqual([imported.status, imported.as, imported.changes], ['imported', 'additions', 1]);
+    assert.deepEqual(env.archive.additions('Columbia').languages, ['PT_BR']);
+
+    // con aggiunte già presenti chiede unisci/sostituisci
+    await env.call('save_brand_profile', { name: 'Columbia', languages: ['EN', 'FR', 'PT_BR', 'IT'] });
+    const choose = (await env.call('import_brand_profile', { path })).data;
+    assert.deepEqual([choose.status, choose.choices], ['choose', ['merge', 'replace']]);
+    assert.equal((await env.call('import_brand_profile', { path, mode: 'merge' })).data.status, 'imported');
+    assert.deepEqual(env.archive.get('Columbia').languages, ['EN', 'FR', 'PT_BR', 'IT']);
+
+    // un vecchio file versione 1 della cartella dei profili si importa come Profilo personale
+    const legacy = join(env.dir, 'acme.json');
+    await (await import('node:fs/promises')).writeFile(legacy, JSON.stringify({ version: 1, name: 'Acme', primaryLanguage: 'IT', languages: ['IT'], naming: { template: '{Nome}', start: 1 }, sections: 'none', glossary: [], confirmedMatches: [] }));
+    const fromLegacy = (await env.call('import_brand_profile', { path: legacy })).data;
+    assert.deepEqual([fromLegacy.status, fromLegacy.as], ['imported', 'personal']);
+    assert.equal((await env.call('import_brand_profile', { path: legacy })).data.status, 'choose');
+    assert.equal((await env.call('import_brand_profile', { path: legacy, rename: 'Acme 2' })).data.name, 'Acme 2');
+    const broken = join(env.dir, 'broken.json');
+    await (await import('node:fs/promises')).writeFile(broken, JSON.stringify({ format: 'figma-auto-fill-brand-profile', version: 9, profile: {} }));
+    assert.match((await env.call('import_brand_profile', { path: broken })).text, /Versione del profilo non supportata/);
   } finally { await env.close(); }
 });

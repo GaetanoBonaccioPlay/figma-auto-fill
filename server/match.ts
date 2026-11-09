@@ -1,4 +1,4 @@
-import type { ConfirmedMatch } from './brands';
+import type { ConfirmedMatch } from '../src/profiles';
 
 export type LayerRef = { frameId: string; frame: string; key: string; text: string };
 export type ExcelRow = { row: number; id?: string; source: string; values: Record<string, string> };

@@ -29,8 +29,7 @@ Non serve installare Node.js né usare il terminale. Dalla pagina **[Releases](h
 **Modalità agente con Claude Desktop** (facoltativa)
 
 1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
-2. Scegli, se vuoi, la cartella dei Profili brand (di default `Documenti/Figma Auto Fill/Profili brand`): puoi metterla in una cartella condivisa con i colleghi.
-3. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
+2. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
 
 **Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`.
 
@@ -146,7 +145,7 @@ Prima di iniziare, dai nomi univoci ai livelli di testo da tradurre, per esempio
 
 ## Modalità agente (MCP)
 
-Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: chiede il Brand, analizza l'Excel, abbina i testi dei frame alle righe, fa confermare le lingue che servono a quelle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
+Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: analizza l'Excel, riconosce il Brand a cui somiglia (senza imporlo), abbina i testi dei frame alle righe, fa confermare le lingue che servono a quelle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
 
 ### Configurazione
 
@@ -160,7 +159,7 @@ Con Claude Desktop basta il file `.mcpb` descritto in [Installazione per i desig
 3. Apri il plugin in Figma Desktop: nell'intestazione compare **Agente collegato** quando il server è raggiungibile. Se il server riparte, il plugin si ricollega da solo. Il collegamento è su `ws://localhost:3055`; con la variabile `FIGMA_AUTOFILL_PORT` puoi cambiare la porta del server, ma il plugin usa sempre la 3055.
 
    Ogni sessione Claude (Claude Desktop, Claude Code, VS Code) avvia il proprio server, ma la porta è una sola. Chi la trova occupata resta in attesa e la prende da solo quando si libera. Se ricevi una richiesta mentre la porta è di un'altra sessione, il server se la fa cedere e il plugin si ricollega in circa 2 secondi; la cessione non avviene mai a metà di un comando. Se `bridge_status` dice che la porta è occupata da un processo che non la cede, è un server di una versione precedente o un altro programma: trovalo con `lsof -i :3055`.
-4. Avvia il prompt MCP **`localizza-frame`** (indica Brand ed Excel se li hai già) oppure descrivi il lavoro all'agente.
+4. Avvia il prompt MCP **`localizza-frame`** (indica l'Excel e, se vuoi, il Brand) oppure descrivi il lavoro all'agente.
 
 Il collegamento vale solo per il plugin importato da manifest (modalità sviluppo). Per distribuire il plugin con la modalità agente serve una decisione separata sull'accesso a `localhost`.
 
@@ -168,13 +167,14 @@ Il collegamento vale solo per il plugin importato da manifest (modalità svilupp
 
 | Passo | Cosa succede | Strumenti |
 | --- | --- | --- |
-| 1. Brand | L'agente chiede il Brand e carica il suo Profilo brand (modello del nome, lingue, section, glossario) | `list_brand_profiles`, `get_brand_profile`, `save_brand_profile` |
-| 2. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e propone la Colonna sorgente; tu confermi la mappatura. In caso di differenze con il profilo vale l'Excel | `analyze_client_excel` |
+| 1. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`); tu confermi la mappatura | `analyze_client_excel` |
+| 2. Brand (facoltativo) | Confronta il **Modello Excel** con quelli dei profili e propone il Brand a cui somiglia, chiedendo conferma. Con più candidati ti fa scegliere; se nel plugin hai selezionato un altro profilo te lo fa notare e chiede quale usare; se l'Excel è nuovo si lavora senza Brand. Le differenze con il profilo sono solo informative: vale l'Excel | `analyze_client_excel`, `get_brand_profile`, `clear_brand`, `list_brand_profiles` |
 | 3. Selezione | Legge i frame selezionati e i livelli di testo visibili | `bridge_status`, `get_selection` |
-| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand. Solo a questo punto l'agente ti propone le lingue: quelle con almeno una traduzione nelle righe usate dai frame. Una colonna compilata solo in righe fuori dalla selezione (per esempio un disclaimer tradotto in più lingue) non viene proposta | `match_selection`, `exclude_layers`, `confirm_matches` |
+| 4. Abbinamento | La **Colonna sorgente** si sceglie dai dati: è quella i cui testi coincidono con i livelli Figma, anche se il profilo dice un'altra lingua (te lo segnala). Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand (o nella sessione se non c'è Brand). Solo a questo punto l'agente ti propone le lingue: quelle con almeno una traduzione nelle righe usate dai frame. Una colonna compilata solo in righe fuori dalla selezione (per esempio un disclaimer tradotto in più lingue) non viene proposta | `match_selection`, `exclude_layers`, `confirm_matches` |
 | 5. Generazione | Il plugin crea gli export come nel flusso manuale. Se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
 | 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` con le sole righe usate dai frame | `write_updated_excel` |
 | 7. Traduzione AI | Solo se la chiedi: traduce le celle vuote rispettando il glossario | `list_empty_cells`, `save_ai_translations` |
+| 8. Reference | Senza Brand ti chiede se salvare l'Excel come nuovo profilo personale per riconoscerlo la volta dopo; con un Brand elenca le novità (Modello Excel, lingue, impostazioni usate diverse) e chiede se ricordarle. Senza il tuo sì nulla cambia | `pending_profile_updates`, `apply_profile_updates` |
 
 ### Regole sull'Excel
 
@@ -187,7 +187,17 @@ Il collegamento vale solo per il plugin importato da manifest (modalità svilupp
 
 ### Profili brand
 
-Ogni Brand è un file JSON nella cartella `brand-profiles/` del progetto (cambiabile con `FIGMA_AUTOFILL_BRANDS_DIR`). Contiene modello del nome e numero iniziale, lingua principale, lingue abituali, organizzazione in section, glossario, i **Livelli esclusi** e gli **Abbinamenti confermati**, che alle sessioni successive risultano esatti. I Livelli esclusi sono voci con il nome o il testo del livello (`To:`, `Reply to:`) oppure, con prefisso `re:`, un'espressione regolare (per esempio `re:^\d{1,2} \w+ \d{4}` per le date). Per condividerlo con i colleghi usa `export_brand_profile` (crea un file) e `import_brand_profile` (non sovrascrive un profilo con lo stesso nome senza `overwrite`; con `rename` lo importa con un altro nome).
+Un Profilo brand è un aiuto, non un vincolo: si può sempre lavorare senza, e quando c'è suggerisce impostazioni che restano modificabili. Contiene il **Modello Excel** del Brand (fogli, intestazioni con la lingua, colonna ID, Colonna sorgente ed **Etichette ricorrenti** come `Subject line` o `CTA`, mai i testi del cliente), modello del nome e numero iniziale, lingua principale, lingue abituali, section, glossario, i **Livelli esclusi** e gli **Abbinamenti confermati**. I Livelli esclusi sono voci con il nome o il testo del livello (`To:`, `Reply to:`) oppure, con prefisso `re:`, un'espressione regolare (per esempio `re:^\d{1,2} \w+ \d{4}` per le date).
+
+L'archivio vive nel plugin ([ADR 0002](docs/adr/0002-archivio-profili-nel-plugin.md)), nella sezione **Profilo brand** in cima alla finestra, anche senza agente:
+
+- **Profili di base**: curati dall'amministratore del repository nella cartella `brand-profiles/` e compilati nel plugin a ogni release. Non si modificano dal plugin. La build fallisce se uno non è valido. Un profilo rinominato può dichiarare i nomi precedenti in `previousNames`.
+- **Profili personali**: li crei tu con il solo nome, poi si riempiono usandoli. Si possono rinominare ed eliminare.
+- **Aggiunte personali**: ciò che impari lavorando con un Profilo di base (Livelli esclusi, abbinamenti confermati, lingue, impostazioni) è salvato a parte e sommato al base, e in caso di conflitto prevale. Restano anche quando arriva una nuova versione del base; se il base sparisce diventano un profilo personale. Puoi cancellarle per tornare alla versione curata.
+- Livelli esclusi e abbinamenti confermati si salvano subito; nome di output, lingue e section solo se confermi.
+- **Esporta** scarica un file `.brand.json` con il profilo completo (base più aggiunte) e la sua origine. **Importa** lo carica: se il nome è di un Profilo di base le novità diventano tue aggiunte (con aggiunte già presenti scegli se unire o sostituire); se è di un tuo profilo personale scegli se sostituirlo o importarlo con un altro nome. Si importano anche i file della vecchia cartella dei profili. Per promuovere un profilo a Profilo di base, l'amministratore copia il file in `brand-profiles/` e pubblica una release.
+
+L'agente legge e scrive lo stesso archivio passando dal plugin, quindi serve il plugin aperto; `export_brand_profile` e `import_brand_profile` lavorano con un percorso di file.
 
 ### Sicurezza
 
@@ -203,7 +213,7 @@ Il server ascolta solo su `127.0.0.1` e accetta connessioni dal plugin Figma (or
 
 ## Sviluppo
 
-Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto e lanciare i test. `npm run server` avvia il server MCP. I test del plugin coprono codici ISO, preset e preferenze linguistiche, nomi e date, tag, fallback, intervalli e incolla TSV, lettura/scrittura `.xlsx`, colonne con frame di larghezze diverse, scelta tra sostituzione e versione, riedizione con MASTER e pulizia in caso di errore Figma; quelli del server coprono bridge, Profili brand, analisi e abbinamento dell'Excel cliente, scrittura dell'Excel aggiornato e il dialogo MCP completo con un plugin simulato.
+Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto e lanciare i test. `npm run server` avvia il server MCP. I test del plugin coprono codici ISO, preset e preferenze linguistiche, nomi e date, tag, fallback, intervalli e incolla TSV, lettura/scrittura `.xlsx`, colonne con frame di larghezze diverse, scelta tra sostituzione e versione, riedizione con MASTER e pulizia in caso di errore Figma; quelli dell'archivio coprono Profili di base e personali, Aggiunte personali, export/import, Modello Excel e riconoscimento; quelli del server coprono bridge, analisi e abbinamento dell'Excel cliente, scrittura dell'Excel aggiornato e il dialogo MCP completo con un plugin simulato.
 
 | File | Contenuto |
 | --- | --- |
@@ -217,7 +227,10 @@ Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto
 | `src/agent-bridge.ts`, `src/agent-protocol.ts` | Collegamento della UI al server MCP e protocollo dei messaggi |
 | `server/index.ts`, `server/tools.ts` | Server MCP: strumenti, prompt `localizza-frame` e sessione |
 | `server/bridge.ts` | WebSocket su localhost verso il plugin |
-| `server/brands.ts` | Profili brand: archivio, esportazione, importazione |
+| `src/profiles.ts` | Profili brand: schema, archivio (base, personali, Aggiunte personali), export/import, Modello Excel e riconoscimento |
+| `src/profiles-ui.ts` | Logica della sezione Profilo brand della UI |
+| `server/brands.ts` | Accesso del server all'archivio del plugin tramite il bridge |
+| `scripts/base-profiles.mjs`, `brand-profiles/` | Validazione e sorgenti dei Profili di base |
 | `scripts/package.mjs`, `mcpb/manifest.json` | Zip del plugin e pacchetto `.mcpb` da consegnare ai designer |
 | `server/excel-analyze.ts`, `server/match.ts`, `server/excel-update.ts` | Analisi dell'Excel cliente, abbinamento, Excel aggiornato |
 
