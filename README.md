@@ -1,14 +1,47 @@
 # Figma Auto Fill
 
-Plugin per Figma Design che crea le varianti linguistiche di uno o più frame a partire da una tabella di traduzioni. Selezioni i frame, compili i testi nel plugin o in Excel e ottieni nella pagina `EXPORT` un frame modificabile per ogni lingua, con la formattazione del modello. Il frame sorgente resta intatto.
+Plugin per Figma Design che crea le varianti linguistiche di uno o più frame a partire da una tabella di traduzioni, compilata nel plugin o in Excel, e le raccoglie nella pagina `EXPORT` con la formattazione del modello. Il frame sorgente resta intatto. In modo facoltativo un agente AI può guidare il lavoro a partire da un Excel cliente. Nell'uso manuale l'Excel viene letto dentro il plugin e non viene inviato in rete.
 
 ![La finestra del plugin con il foglio delle traduzioni](docs/screenshots/00-panoramica.png)
 
 *Tutti gli screenshot mostrano l'interfaccia del plugin con dati dimostrativi di una campagna fittizia.*
 
-**[Funzionalità](#funzionalità)** · **[Installazione per i designer](#installazione-per-i-designer-senza-nodejs)** · **[Avvio da sorgente](#avvio-da-sorgente-sviluppo)** · **[Come si usa](#come-si-usa)** · **[Modalità agente (MCP)](#modalità-agente-mcp)** · **[Formattazione e limiti](#formattazione-e-limiti)** · **[Sviluppo](#sviluppo)**
+| [Installazione](#installazione) | [Funzionalità](#funzionalità) | [Come si usa](#come-si-usa) | [Modalità agente](#modalità-agente-mcp) | [Formattazione e limiti](#formattazione-e-limiti) | [Sviluppo](#sviluppo) |
+| :---: | :---: | :---: | :---: | :---: | :---: |
 
-Interfaccia e logica sono scritte in TypeScript vanilla. Nell'uso manuale l'Excel viene letto dentro il plugin e i contenuti non vengono inviati in rete. La [modalità agente](#modalità-agente-mcp) è facoltativa: collega il plugin a un server MCP che gira sul tuo computer, raggiungibile solo da `localhost` (`devAllowedDomains` nel manifest).
+## Installazione
+
+### Per i designer (senza Node.js)
+
+Non serve installare Node.js né usare il terminale. Dalla pagina **Releases** del repository si scaricano due file; il secondo serve solo per la [modalità agente](#modalità-agente-mcp).
+
+| File | A cosa serve |
+| --- | --- |
+| `figma-auto-fill-plugin-vX.Y.Z.zip` | Il plugin per Figma Desktop |
+| `figma-auto-fill-vX.Y.Z.mcpb` | Il server per Claude Desktop (macOS), con tutto incorporato |
+
+**Plugin**
+
+1. Scompatta lo zip in una cartella che non sposterai (per esempio in Documenti): Figma la rilegge a ogni apertura.
+2. In Figma Desktop: **Plugins → Development → Import plugin from manifest…** e scegli `manifest.json` della cartella.
+3. Avvia **Figma Auto Fill** da **Plugins → Development**.
+
+**Modalità agente con Claude Desktop** (facoltativa)
+
+1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
+2. Scegli, se vuoi, la cartella dei Profili brand (di default `Documenti/Figma Auto Fill/Profili brand`): puoi metterla in una cartella condivisa con i colleghi.
+3. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
+
+**Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`.
+
+### Da sorgente (per sviluppare)
+
+1. Installa Node.js 20 o successivo e apri Figma Desktop.
+2. In questa cartella esegui `npm install` e `npm run build`.
+3. In un file Figma Design modificabile, apri **Plugins → Development → Import plugin from manifest…** e scegli `manifest.json` di questa cartella.
+4. Avvia **Figma Auto Fill** dal menu Development.
+
+Dopo modifiche al codice, esegui di nuovo `npm run build` e riavvia il plugin. Il plugin non importa file `.fig` direttamente: lavora sul documento aperto in Figma.
 
 ## Funzionalità
 
@@ -98,40 +131,6 @@ Il frame della lingua principale in `EXPORT` è marcato come **MASTER**. Per rie
 - Se attivi le section su un export precedente, il MASTER viene spostato nella section appropriata.
 - Quando il modello selezionato è un MASTER, i testi della lingua principale nell'anteprima sono di sola lettura.
 
-## Installazione per i designer (senza Node.js)
-
-Non serve installare Node.js né usare il terminale. Dalla pagina **Releases** del repository si scaricano due file; il secondo serve solo per la [modalità agente](#modalità-agente-mcp).
-
-| File | A cosa serve |
-| --- | --- |
-| `figma-auto-fill-plugin-vX.Y.Z.zip` | Il plugin per Figma Desktop |
-| `figma-auto-fill-vX.Y.Z.mcpb` | Il server per Claude Desktop (macOS), con tutto incorporato |
-
-**Plugin**
-
-1. Scompatta lo zip in una cartella che non sposterai (per esempio in Documenti): Figma la rilegge a ogni apertura.
-2. In Figma Desktop: **Plugins → Development → Import plugin from manifest…** e scegli `manifest.json` della cartella.
-3. Avvia **Figma Auto Fill** da **Plugins → Development**.
-
-**Modalità agente con Claude Desktop** (facoltativa)
-
-1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
-2. Scegli, se vuoi, la cartella dei Profili brand (di default `Documenti/Figma Auto Fill/Profili brand`): puoi metterla in una cartella condivisa con i colleghi.
-3. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
-
-**Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`.
-
-**Pubblicare una release (per chi mantiene il repo):** aggiorna `version` in `package.json`, poi crea e invia il tag corrispondente, per esempio `git tag v1.0.1 && git push origin v1.0.1`. La Action in `.github/workflows/release.yml` esegue i controlli, compila i due file e li pubblica. In locale `npm run package` li genera nella cartella `release/`.
-
-## Avvio da sorgente (sviluppo)
-
-1. Installa Node.js 20 o successivo e apri Figma Desktop.
-2. In questa cartella esegui `npm install` e `npm run build`.
-3. In un file Figma Design modificabile, apri **Plugins → Development → Import plugin from manifest…** e scegli `manifest.json` di questa cartella.
-4. Avvia **Figma Auto Fill** dal menu Development.
-
-Dopo modifiche al codice, esegui di nuovo `npm run build` e riavvia il plugin. Il plugin non importa file `.fig` direttamente: lavora sul documento aperto in Figma.
-
 ## Come si usa
 
 Le tre sezioni numerate del plugin seguono il flusso di lavoro e si aprono e chiudono facendo clic sul titolo.
@@ -151,7 +150,7 @@ Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da 
 
 ### Configurazione
 
-Con Claude Desktop basta il file `.mcpb` descritto in [Installazione per i designer](#installazione-per-i-designer-senza-nodejs). I passi seguenti servono per lavorare da sorgente, per esempio con Claude Code.
+Con Claude Desktop basta il file `.mcpb` descritto in [Installazione per i designer](#per-i-designer-senza-nodejs). I passi seguenti servono per lavorare da sorgente, per esempio con Claude Code.
 
 1. Esegui `npm install` e `npm run build`.
 2. Registra il server nel client MCP, per esempio con Claude Code:
@@ -218,3 +217,7 @@ Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto
 | `server/brands.ts` | Profili brand: archivio, esportazione, importazione |
 | `scripts/package.mjs`, `mcpb/manifest.json` | Zip del plugin e pacchetto `.mcpb` da consegnare ai designer |
 | `server/excel-analyze.ts`, `server/match.ts`, `server/excel-update.ts` | Analisi dell'Excel cliente, abbinamento, Excel aggiornato |
+
+### Pubblicare una release
+
+Per chi mantiene il repo: aggiorna `version` in `package.json`, poi crea e invia il tag corrispondente, per esempio `git tag v1.0.1 && git push origin v1.0.1`. La Action in `.github/workflows/release.yml` esegue i controlli, compila i due file e li pubblica. In locale `npm run package` li genera nella cartella `release/`.
