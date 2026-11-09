@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Figma Auto Fill</title>
+  <style>/* INLINE_CSS */</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Figma Auto Fill</h1>
+      <p>Traduzioni Excel → frame Figma</p>
+    </div>
+    <span id="selection-count" class="badge">0 frame</span>
+  </header>
+
+  <main>
+    <details class="card collapsible" open>
+      <summary><h2>1. Frame e lingue</h2></summary>
+      <div class="section-body">
+      <p class="hint">Seleziona frame o section in Figma: una section include tutti i frame al suo interno. Rinomina manualmente i livelli di testo con chiavi stabili.</p>
+      <div class="naming">
+        <label class="grow">Modello nome output
+          <input id="name-template" value="{Nome}" autocomplete="off" spellcheck="false" aria-describedby="naming-help">
+        </label>
+        <div id="name-tokens" class="name-tokens" role="group" aria-label="Variabili del nome"></div>
+        <div class="row naming-options">
+          <label class="number-start">Numera da<input id="number-start" type="number" min="0" step="1" value="1" inputmode="numeric"></label>
+          <p id="naming-help" class="hint">{Nome} è il nome base di ogni frame. {Lingua} e {Paese} sono minuscoli: {Lingua} vale en_gb, oppure en se usi anche {Paese}. Senza {Lingua} né {Paese} il codice lingua viene aggiunto in fondo.</p>
+        </div>
+      </div>
+      <div id="frames" class="frames"></div>
+      <div class="row between">
+        <strong>Lingue da generare</strong>
+        <button id="reset-languages" class="text-button" type="button" disabled>Ripristina lingue</button>
+      </div>
+      <div id="languages" class="languages"></div>
+      <div class="row language-tools">
+        <button id="show-custom-language" class="add-language secondary" type="button" aria-label="Aggiungi una lingua" disabled>+</button>
+        <span class="hint">Aggiungi un codice lingua o una variante personalizzata</span>
+      </div>
+      <div id="custom-language-wrap" class="row" hidden>
+        <label class="grow">Nuova lingua o variante
+          <input id="custom-language" placeholder="EN_GB" maxlength="5" autocomplete="off" aria-describedby="language-help">
+        </label>
+        <button id="add-language" class="secondary" type="button">Aggiungi</button>
+      </div>
+      <p id="language-error" class="error" role="alert" hidden></p>
+      <p id="language-help" class="hint">I preset seguono l’ordine lingua → paese. Una variante vuota usa prima la lingua base, poi il MASTER. La selezione viene salvata per il prossimo avvio.</p>
+      <div class="row">
+        <label class="grow">Lingua principale · MASTER
+          <select id="primary-language"></select>
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="generate-locals">Genera locales</button>
+        <button id="make-template" class="secondary" disabled>Scarica template Excel</button>
+        <label class="file-button secondary">Importa Excel<input id="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+      </div>
+      </div>
+    </details>
+
+    <details class="card collapsible" open>
+      <summary><h2>2. Anteprima traduzioni</h2></summary>
+      <div class="section-body">
+      <div class="section-actions"><button id="download-edited" class="secondary" disabled>Scarica Excel aggiornato</button></div>
+      <p id="workbook-caption" class="hint">Genera i locals dai frame selezionati o importa un file .xlsx.</p>
+      <label class="inline select-all"><input id="translate-all" type="checkbox" disabled> Traduci tutto</label>
+      <p class="hint sheet-help">Seleziona celle lingua trascinando o con Maiusc+clic. Copia e incolla con ⌘/Ctrl+C e ⌘/Ctrl+V. Doppio clic o Invio per modificare.</p>
+      <div id="preview" class="table-wrap"></div>
+      <div id="sheet-status" class="hint" role="status" aria-live="polite"></div>
+      <div id="validation" class="validation" aria-live="polite"></div>
+      </div>
+    </details>
+
+    <details class="card collapsible" open>
+      <summary><h2>3. Crea o aggiorna EXPORT</h2></summary>
+      <div class="section-body">
+      <p class="hint">La lingua principale diventa il MASTER. Per aggiornare le altre lingue, seleziona il MASTER in EXPORT e modifica i suoi testi in Figma.</p>
+      <div class="section-options">
+        <label class="inline"><input id="create-sections" type="checkbox"> Organizza gli export in section</label>
+        <fieldset id="section-mode-options" class="section-mode-options" hidden>
+          <legend>Come raggruppare le lingue</legend>
+          <label class="section-choice">
+            <input type="radio" name="section-mode" value="locale" checked>
+            <span><strong>Una section per ogni lingua o variante</strong><small>EN → en/ · EN_GB → en_gb/</small></span>
+          </label>
+          <label class="section-choice">
+            <input type="radio" name="section-mode" value="base">
+            <span><strong>Varianti nella section della lingua base</strong><small>EN e EN_GB insieme in en/</small></span>
+          </label>
+        </fieldset>
+        <p class="hint">I nomi delle section sono minuscoli e terminano con /.</p>
+      </div>
+      <div class="row actions">
+        <button id="generate" class="secondary" disabled>Crea / aggiorna EXPORT</button>
+        <span id="busy" class="hint" role="status"></span>
+      </div>
+      <div id="result" aria-live="polite"></div>
+      </div>
+    </details>
+  </main>
+  <dialog id="replace-dialog" aria-labelledby="replace-title">
+    <h2 id="replace-title">Export già presenti</h2>
+    <p>Esistono già frame con questi nomi. Puoi sostituirli oppure creare una nuova versione con suffisso <code>_v2</code>, <code>_v3</code> e così via.</p>
+    <ul id="replace-list"></ul>
+    <div class="row actions">
+      <button id="cancel-replace" class="secondary" type="button">Annulla</button>
+      <button id="confirm-version" class="secondary" type="button">Crea nuova versione</button>
+      <button id="confirm-replace" type="button">Sostituisci export</button>
+    </div>
+  </dialog>
+  <script>/* INLINE_JS */</script>
+</body>
+</html>
