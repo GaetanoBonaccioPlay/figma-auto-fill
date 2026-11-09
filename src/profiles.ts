@@ -669,3 +669,23 @@ export function exportFilename(name: string): string {
   const slug = name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'profilo';
   return `${slug}.brand.json`;
 }
+
+export type HeaderMapping = { column: number; header: string; code: string | null };
+
+// Le corrispondenze intestazione → lingua che il Brand conosce già per questo formato (Modello Excel più simile).
+// Un'intestazione presente nel modello senza lingua (per esempio `Context`) vale "non è una lingua".
+// Le intestazioni che il modello non conosce restano all'analisi automatica.
+export function mappingFromProfile(profile: BrandProfile, model: ExcelModel, headerCells: string[]): HeaderMapping[] {
+  const index = closestModelIndex(profile, model);
+  if (index < 0) return [];
+  const known = profile.excelModels[index].headers;
+  return headerCells.flatMap((header, offset) => {
+    const column = offset + 1;
+    const key = fold(header);
+    if (!key) return [];
+    const matches = known.filter(item => fold(item.header) === key);
+    if (!matches.length) return [];
+    const best = matches.find(item => item.column === column) ?? matches[0];
+    return [{ column, header: header.trim(), code: best.code ?? null }];
+  });
+}

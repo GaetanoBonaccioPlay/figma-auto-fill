@@ -171,7 +171,7 @@
         {
           "column": 1,
           "header": "English",
-          "code": "EN"
+          "code": "EN_GB"
         },
         {
           "column": 2,
@@ -184,50 +184,52 @@
         {
           "column": 4,
           "header": "IE",
-          "code": "IE"
+          "code": "EN_IE"
         },
         {
           "column": 5,
           "header": "FI",
-          "code": "FI"
+          "code": "EN_FI"
         },
         {
           "column": 6,
           "header": "NL",
-          "code": "NL"
+          "code": "EN_NL"
         },
         {
           "column": 7,
-          "header": "BE EN"
+          "header": "BE EN",
+          "code": "EN_BE"
         },
         {
           "column": 8,
           "header": "French",
-          "code": "FR"
+          "code": "FR_FR"
         },
         {
           "column": 9,
           "header": "BE FR",
-          "code": "BE_FR"
+          "code": "FR_BE"
         },
         {
           "column": 10,
           "header": "German",
-          "code": "DE"
+          "code": "DE_DE"
         },
         {
           "column": 11,
-          "header": "AT"
+          "header": "AT",
+          "code": "DE_AT"
         },
         {
           "column": 12,
           "header": "Spanish",
-          "code": "ES"
+          "code": "ES_ES"
         },
         {
           "column": 13,
           "header": "Italian",
-          "code": "IT"
+          "code": "IT_IT"
         },
         {
           "column": 14,

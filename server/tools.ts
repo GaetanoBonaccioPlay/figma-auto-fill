@@ -5,7 +5,7 @@ import { basename, extname, resolve } from 'node:path';
 import { frameLabel, normalizeLanguage, validateRows, type FrameInfo, type TranslationRow } from '../src/core';
 import type { UiState } from '../src/agent-protocol';
 import {
-  closestModelIndex, extractExcelModel, modelSimilarity, profileNaming, recognize, validateProfile,
+  closestModelIndex, extractExcelModel, mappingFromProfile, modelSimilarity, profileNaming, recognize, validateProfile,
   type BrandProfile, type ConfirmedMatch, type ExcelModel, type ProfileOrigin, type Recognition, type SectionMode
 } from '../src/profiles';
 import { PluginProfiles } from './brands';
@@ -59,7 +59,7 @@ export const WORKFLOW = `Segui questi passi, uno alla volta, chiedendo conferma 
 REGOLA GENERALE: davanti a un'incongruenza (lingue del plugin diverse da quelle dell'Excel, testi o traduzioni mancanti, nomi o impostazioni che non tornano, risposte "conflict" o "confirm-languages") NON decidere da solo e non andare avanti: fai una domanda breve al designer, con una proposta consigliata, e agisci solo dopo la risposta.
 Il Brand è un aiuto, non un vincolo: si può lavorare senza Brand e quando c'è il suo Profilo brand suggerisce, ma vale sempre l'Excel che hai davanti.
 1. EXCEL CLIENTE — chiedi il percorso dell'Excel e chiama analyze_client_excel (se il designer nomina un Brand passalo in brand). Mostra foglio, colonne lingua trovate (intestazione → codice) e chiedi conferma o correzioni della mappatura. NON chiedere ancora quali lingue generare: dipende dalle righe usate dai frame (passo 4).
-2. BRAND — leggi il blocco "brand" della risposta e segui "brand.next": con un candidato chiaro proponilo e chiedi conferma; con più candidati elencali e fai scegliere; se il profilo selezionato nel plugin è diverso dal Brand riconosciuto fai notare la differenza e chiedi quale usare; se non c'è nessun candidato dillo in una riga e prosegui senza Brand. Seleziona il Brand scelto con get_brand_profile. Le differenze tra Excel e profilo (profileDifferences) sono solo informative: riportale in una riga, non chiedere nulla.
+2. BRAND — leggi il blocco "brand" della risposta e segui "brand.next": con un candidato chiaro proponilo e chiedi conferma; con più candidati elencali e fai scegliere; se il profilo selezionato nel plugin è diverso dal Brand riconosciuto fai notare la differenza e chiedi quale usare; se non c'è nessun candidato dillo in una riga e prosegui senza Brand. Seleziona il Brand scelto con get_brand_profile. Le differenze tra Excel e profilo (profileDifferences) sono solo informative: riportale in una riga, non chiedere nulla. Se c'è profileMapping (in analyze_client_excel o get_brand_profile), il Brand conosce già questo formato e ha corretto la mappatura delle colonne (es. IE → EN_IE): mostra le correzioni nella mappatura da confermare.
 3. SELEZIONE — chiedi di selezionare i frame in Figma con il plugin aperto (bridge_status, get_selection).
 4. ABBINAMENTO — chiama match_selection con le colonne confermate. La Colonna sorgente si sceglie dai dati (sourceChoice): se differisce dalla lingua principale del profilo riportalo in una riga. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand, o nella sessione se non c'è Brand) e richiama match_selection. Registra le decisioni con confirm_matches.
    LINGUE — solo ora, dopo l'abbinamento, proponi le lingue da generare: quelle in "languages.needed" (le colonne con almeno una traduzione nelle righe usate dai frame). Le lingue in "languages.notNeeded" hanno traduzioni solo in righe che non sono nei frame selezionati (es. un disclaimer): non proporle e dillo in una riga. Se una lingua necessaria ha celle vuote (missingRows), segnalalo. Chiedi conferma.
@@ -115,6 +115,22 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     return 'sessione';
   };
   const primaryOf = (): string => requireExcel().primary;
+  // Colonne lingua dell'Excel: l'analisi automatica, corretta da ciò che il Brand sa già di questo formato.
+  const profileColumns = () => {
+    const report = session.analysis!;
+    const columns = new Map(report.analysis.languageColumns.map(item => [item.column, item.code]));
+    const changes: Array<{ column: string; header: string; code: string | null; detected: string | null }> = [];
+    const headerCells = session.sheetRows[report.analysis.headerRow - 1] ?? [];
+    if (session.brand && session.model) {
+      for (const item of mappingFromProfile(session.brand, session.model, headerCells)) {
+        const detected = columns.get(item.column) ?? null;
+        if (detected === item.code) continue;
+        if (item.code) columns.set(item.column, item.code); else columns.delete(item.column);
+        changes.push({ column: columnLetter(item.column), header: item.header, code: item.code, detected });
+      }
+    }
+    return { columns: [...columns].sort((a, b) => a[0] - b[0]).map(([column, code]) => ({ column, code })), changes };
+  };
   const requireExcel = (): ExcelConfig => {
     if (!session.excel) throw new Error('Nessun Excel cliente in uso: esegui analyze_client_excel e match_selection');
     return session.excel;
@@ -183,7 +199,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
       const { profile, origin, additions } = await profiles.get(name);
       await profiles.select(profile.name);
       useBrand(profile, origin);
-      return { ...profile, origin, hasAdditions: Boolean(additions) };
+      return { ...profile, origin, hasAdditions: Boolean(additions), excelMapping: mappingNote() ?? undefined };
     });
 
   register('clear_brand', 'Lavora senza Brand: deseleziona il profilo nella sessione e nel plugin.', {},
@@ -247,6 +263,17 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
       }
       return result;
     });
+
+  // Correzioni della mappatura che vengono dal Brand: da mostrare al designer insieme alla mappatura da confermare.
+  const mappingNote = () => {
+    if (!session.analysis || !session.brand) return null;
+    const { columns, changes } = profileColumns();
+    return changes.length ? {
+      from: session.brand.name, changes,
+      languages: columns.map(item => ({ column: columnLetter(item.column), code: item.code })),
+      hint: `Mappatura corretta con il Modello Excel di ${session.brand.name}: mostrala al designer. match_selection la usa se non passi languages.`
+    } : null;
+  };
 
   // ---------- Excel cliente ----------
   register('analyze_client_excel',
@@ -317,7 +344,8 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
           sessionBrand: session.brand?.name ?? null, selectedInPlugin: selected?.name ?? null,
           recognition: session.recognition, decision, next
         },
-        profileDifferences: session.brand ? profileDifferences(session.brand, session.model, report.analysis.languageColumns.map(item => item.code)) : null
+        profileDifferences: session.brand ? profileDifferences(session.brand, session.model, report.analysis.languageColumns.map(item => item.code)) : null,
+        profileMapping: mappingNote()
       };
     });
 
@@ -336,7 +364,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
       if (languages) {
         for (const item of languages) languageColumns[normalizeLanguage(item.code)] = columnNumber(item.column);
       } else {
-        for (const item of report.analysis.languageColumns) if (!(item.code in languageColumns)) languageColumns[item.code] = item.column;
+        for (const item of profileColumns().columns) if (!(item.code in languageColumns)) languageColumns[item.code] = item.column;
       }
       const sheet: SheetData | undefined = (await readSheets(report.path)).find(item => item.name === report.analysis.sheet);
       if (!sheet) throw new Error(`Foglio "${report.analysis.sheet}" non più presente nel file`);
@@ -402,7 +430,9 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
       if (result.staleConfirmed.length) warnings.push(`${result.staleConfirmed.length} Abbinamenti confermati non più validi (riga assente nell'Excel): ignorati`);
       const differsFromProfile = Boolean(profilePrimary && primary !== profilePrimary);
       if (differsFromProfile) warnings.push(`Colonna sorgente ${columnLetter(sourceColumn)} (${primary}) diversa dalla lingua principale del profilo (${profilePrimary}): vale l'Excel`);
+      const mapping = languages ? null : mappingNote();
       return {
+        ...(mapping ? { profileMapping: mapping } : {}),
         sourceChoice: {
           column: columnLetter(sourceColumn), language: primary, reason, matchingTexts: matching(sourceColumn),
           profilePrimaryLanguage: profilePrimary ?? null, differsFromProfile
@@ -678,7 +708,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     const excelModel = !brand.excelModels.length ? 'nuovo'
       : closest < 0 ? 'nuovo formato (si aggiunge a quelli noti)'
         : modelChanged(brand.excelModels[closest], model) ? 'aggiornato' : null;
-    const newLanguages = [...new Set([...excelLanguages, ...(session.usedSettings?.languages ?? [])])].filter(code => !brand.languages.includes(code));
+    const newLanguages = [...new Set([...excelLanguages, ...(session.usedSettings?.languages ?? [])])].filter(code => !knownLanguage(brand, code));
     const settings = session.usedSettings ? settingsDifferences(brand, session.usedSettings) : [];
     return { mode: 'update' as const, brand: brand.name, origin: session.brandOrigin, changes: { excelModel, newLanguages, settings } };
   };
@@ -778,7 +808,7 @@ function profileDifferences(profile: BrandProfile, model?: ExcelModel | null, ex
     const closest = profile.excelModels[closestModelIndex(profile, model)] ?? profile.excelModels[0];
     if (closest.sheet.trim().toLowerCase() !== model.sheet.trim().toLowerCase()) notes.push(`foglio "${model.sheet}" invece di "${closest.sheet}"`);
   }
-  for (const code of excelLanguages ?? []) if (!profile.languages.includes(code)) notes.push(`nuova lingua ${code}`);
+  for (const code of excelLanguages ?? []) if (!knownLanguage(profile, code)) notes.push(`nuova lingua ${code}`);
   return notes;
 }
 
@@ -787,7 +817,7 @@ function settingsDifferences(profile: BrandProfile, used: { naming: { template: 
   const naming = profileNaming(profile);
   if (naming.template !== used.naming.template || naming.start !== used.naming.start) notes.push(`nome di output ${used.naming.template} invece di ${naming.template}`);
   if ((profile.sections ?? 'none') !== used.sections) notes.push(`section ${used.sections} invece di ${profile.sections ?? 'none'}`);
-  const extra = used.languages.filter(code => !profile.languages.includes(code));
+  const extra = used.languages.filter(code => !knownLanguage(profile, code));
   if (extra.length) notes.push(`lingue ${extra.join(', ')} non nel profilo`);
   return notes;
 }
@@ -795,4 +825,9 @@ function settingsDifferences(profile: BrandProfile, used: { naming: { template: 
 function modelChanged(known: ExcelModel, current: ExcelModel): boolean {
   const structure = (model: ExcelModel) => JSON.stringify([model.sheet, model.headerRow, model.headers, model.idColumn ?? null, model.sourceColumn ?? null]);
   return structure(known) !== structure(current) || modelSimilarity(known, current).score < 0.9;
+}
+
+// Una variante (FR_BE) è già nota se il profilo ha la variante o la sua lingua base (FR).
+function knownLanguage(profile: BrandProfile, code: string): boolean {
+  return profile.languages.includes(code) || profile.languages.includes(code.split('_')[0]);
 }

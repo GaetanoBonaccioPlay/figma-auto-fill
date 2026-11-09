@@ -688,3 +688,46 @@ test('export e import via agente passano dal plugin: le novità su un Profilo di
     assert.match((await env.call('import_brand_profile', { path: broken })).text, /Versione del profilo non supportata/);
   } finally { await env.close(); }
 });
+
+test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT viene dal Modello Excel del profilo', async () => {
+  const columbia = JSON.parse(await readFile(new URL('../brand-profiles/columbia.json', import.meta.url), 'utf8'));
+  const env = await setup({ bases: [columbia] });
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, frame: { ...FRAME, textLayers: [
+      { id: 'a', key: 'headline', text: 'Built for the cold', markup: 'Built for the cold' },
+      { id: 'b', key: 'cta', text: 'Shop now', markup: 'Shop now' }
+    ] } });
+    const header = ['English', 'Context', 'Character Limit', 'IE', 'FI', 'NL', 'BE EN', 'French', 'BE FR', 'German', 'AT', 'Spanish', 'Italian'];
+    const row = (context, en) => [en, context, '', en, en, en, en, `${en} (fr)`, `${en} (fr-be)`, `${en} (de)`, `${en} (at)`, `${en} (es)`, `${en} (it)`];
+    const excel = await writeFixture(join(env.dir, 'ecom-53999-col-euuk.xlsx'), [{ name: 'EMAIL', rows: [header,
+      row('Subject Line Option 1 Launch', 'Winter is here'), row('Pre Header Option 1 Launch', 'Free shipping'), row('BLOCK ONE', ''),
+      row('Headline Launch', 'Built for the cold'), row('Body Copy Launch', 'Stay warm'), row('CTA Launch', 'Shop now'), row('Link Launch', 'https://x')
+    ] }]);
+    const analysis = (await env.call('analyze_client_excel', { path: excel })).data;
+    // l'analisi automatica sbaglia (IE e FI come lingue, AT non riconosciuto)…
+    assert.ok(analysis.analysis.languageColumns.some(item => item.header === 'FI' && item.code === 'FI'));
+    assert.equal(analysis.brand.decision, 'confirm-candidate');
+    assert.equal(analysis.brand.recognition.candidates[0].name, 'Columbia');
+
+    // …il designer conferma Columbia e il profilo corregge la mappatura
+    const brand = (await env.call('get_brand_profile', { name: 'Columbia' })).data;
+    const changes = Object.fromEntries(brand.excelMapping.changes.map(item => [item.header, item.code]));
+    assert.deepEqual(changes, { English: 'EN_GB', IE: 'EN_IE', FI: 'EN_FI', NL: 'EN_NL', 'BE EN': 'EN_BE', French: 'FR_FR', 'BE FR': 'FR_BE', German: 'DE_DE', AT: 'DE_AT', Spanish: 'ES_ES', Italian: 'IT_IT' });
+
+    const match = (await env.call('match_selection')).data;
+    assert.deepEqual([match.sourceChoice.column, match.sourceChoice.language], ['A', 'EN_GB']);
+    assert.deepEqual(match.columns.languages, {
+      EN_GB: 'A', EN_IE: 'D', EN_FI: 'E', EN_NL: 'F', EN_BE: 'G', FR_FR: 'H', FR_BE: 'I', DE_DE: 'J', DE_AT: 'K', ES_ES: 'L', IT_IT: 'M'
+    });
+    assert.ok(match.profileMapping.changes.length > 0);
+    assert.equal(match.summary.exact, 2);
+    // con una mappatura esplicita del designer vale la sua
+    const manual = (await env.call('match_selection', { languages: [{ column: 'A', code: 'EN' }, { column: 'H', code: 'FR' }] })).data;
+    assert.deepEqual(manual.columns.languages, { EN: 'A', FR: 'H' });
+    assert.equal(manual.profileMapping, undefined);
+    await env.call('match_selection');
+    await env.call('generate_exports', { languages: ['FR_BE', 'DE_AT'] });
+    // FR_BE e DE_AT sono varianti di lingue che Columbia ha già: nessuna "lingua nuova" da ricordare
+    assert.deepEqual((await env.call('pending_profile_updates')).data.changes?.newLanguages ?? [], []);
+  } finally { await env.close(); }
+});

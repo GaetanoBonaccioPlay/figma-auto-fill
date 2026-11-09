@@ -33,9 +33,20 @@ Correzioni emerse dai file reali:
 - Un foglio formattato fino alla riga 1.048.576 bloccava la lettura: ora si legge fino all'ultima cella con un valore.
 - Una colonna lingua non riconosciuta (`Dutch NLNL`, `AT`, `BE EN`) faceva passare testi del cliente tra le Etichette ricorrenti: ora le etichette vengono solo dalle colonne-chiave (intestazione vuota, `Context`, `Field`, …).
 
-Da verificare nel collaudo in Figma Desktop:
+- Nel formato d'agenzia le colonne `IE`, `FI`, `NL` sono inglese per Irlanda, Finlandia e Paesi Bassi, ma l'analisi automatica le legge come lingue e non riconosce `AT` né `BE EN`. Ora, con un Brand, le corrispondenze intestazione → lingua del suo Modello Excel prevalgono (`IE` → `EN_IE`, `AT` → `DE_AT`, `BE FR` → `FR_BE`) e l'agente mostra le correzioni (`profileMapping`). Il Modello Excel d'agenzia di Columbia è allineato ai codici del suo formato master.
+- Le varianti di una lingua già nel profilo (`FR_BE` con `FR`) non vengono più proposte come lingue nuove.
 
-- Nel formato d'agenzia le colonne `IE`, `FI`, `NL` sono inglese per Irlanda, Finlandia e Paesi Bassi, ma l'analisi le legge come lingue (`IE`, finlandese, olandese) e non riconosce `AT`, `BE EN`, `Dutch NLNL`: il designer deve correggere la mappatura. Proposta: riusare le corrispondenze intestazione → lingua del Modello Excel del Brand riconosciuto.
+## Collaudo d'integrazione (2026-11-09)
+
+Server MCP reale, codice compilato del plugin (`dist/code.js`) con Figma simulato, relay come la UI, Excel d'agenzia Columbia reale (`ecom-52631-…-technical-tee-focus`), frame con i suoi testi inglesi più un livello `To:`:
+
+- Columbia riconosciuto con candidato chiaro (0,68); dopo la conferma la mappatura è corretta dal profilo.
+- Colonna sorgente scelta dai dati: A (`EN_GB`), diversa da `EN` del profilo, segnalata.
+- 4 abbinamenti esatti; `To:` escluso e salvato come Aggiunta personale in `clientStorage`, il Profilo di base intatto.
+- 8 export generati in `EXPORT` con le traduzioni reali; Excel aggiornato scritto con le sole righe usate; originale intatto (lavorato su una copia).
+- A fine sessione proposte solo le novità vere: lingue `CS` e `PL`, Modello Excel aggiornato.
+
+Resta da fare a mano con il designer: la stessa sessione in Figma Desktop con Claude Desktop o Claude Code (sezione Profilo brand della UI, export/import tra due utenti).
 
 ## Blocked by
 
