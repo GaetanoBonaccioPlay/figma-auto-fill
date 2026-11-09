@@ -92,6 +92,10 @@ function pluginHarness({ existingExport = false, failOnWrite = false, autoRename
     createPage() { const page = new Page(''); this.root.children.push(page); return page; },
     createSection() { const section = new Section(); this.currentPage.appendChild(section); return section; },
     async setCurrentPageAsync(page) { this.currentPage = page; },
+    async getNodeByIdAsync(id) {
+      const walk = node => node.id === id ? node : (node.children ?? []).map(walk).find(Boolean);
+      return this.root.children.map(walk).find(Boolean) ?? null;
+    },
     viewport: { scrollAndZoomIntoView() {} }
   };
   if (existingExport) figma.root.children.push(new Page('EXPORT', [new Frame('260717_Hero_EN', [])]));
@@ -645,4 +649,79 @@ test('frame con lo stesso nome sono ammessi se il modello genera nomi diversi', 
   figma.currentPage.selection = [sourceFrame, twin];
   await figma.ui.onmessage({ ...input, naming: { template: '{Nome}', start: 1, date: '' } });
   assert.match(messages.at(-1).message, /stesso nome/);
+});
+
+const agent = (figma, messages) => async (command, payload) => {
+  const id = `cmd-${messages.length}`;
+  await figma.ui.onmessage({ kind: 'agent-command', id, command, payload });
+  // Sul bridge reale la risposta viaggia come JSON: qui si normalizza per evitare array di un altro realm `vm`.
+  return JSON.parse(JSON.stringify(messages.findLast(message => message.kind === 'agent-result' && message.id === id)));
+};
+
+test('bridge agente: snapshot della selezione e di frame indicati per id', async () => {
+  const { figma, sourceFrame, messages } = pluginHarness();
+  const run = agent(figma, messages);
+  const selection = await run('snapshot');
+  assert.equal(selection.ok, true);
+  assert.deepEqual(selection.data.frames.map(frame => [frame.id, frame.baseName]), [[sourceFrame.id, '260717_Hero']]);
+  assert.deepEqual(selection.data.frames[0].textLayers.map(layer => [layer.key, layer.text, layer.markup]), [['headline', 'Sale', 'Sale']]);
+
+  figma.currentPage.selection = [];
+  assert.deepEqual((await run('snapshot')).data.frames, []);
+  const byId = await run('snapshot', { frameIds: [sourceFrame.id, 'non-esiste'] });
+  assert.deepEqual(byId.data.frames.map(frame => frame.id), [sourceFrame.id]);
+});
+
+test('bridge agente: plan e generate producono gli stessi export del flusso manuale', async () => {
+  const { figma, sourceFrame, messages } = pluginHarness();
+  const run = agent(figma, messages);
+  const input = request(sourceFrame.id);
+  const { kind, ...payload } = input;
+
+  const emptyPlan = await run('plan', { kind: 'inspect', ...payload });
+  assert.equal(emptyPlan.ok, true);
+  assert.deepEqual(emptyPlan.data.replacements, []);
+  assert.deepEqual(emptyPlan.data.selections.map(item => [item.language, item.action]), [['EN', 'create'], ['NL', 'create']]);
+
+  const generated = await run('generate', input);
+  assert.equal(generated.ok, true, generated.error);
+  assert.equal(generated.data.names.length, 2);
+  assert.equal(messages.some(message => message.kind === 'done'), false, 'il risultato va solo al bridge, non alla UI manuale');
+  const exportPage = figma.root.children.find(page => page.name === 'EXPORT');
+  assert.equal(exportPage.children.length, 2);
+
+  // stesso esito del flusso manuale con un secondo harness
+  const manual = pluginHarness();
+  await manual.figma.ui.onmessage(request(manual.sourceFrame.id));
+  const manualPage = manual.figma.root.children.find(page => page.name === 'EXPORT');
+  assert.deepEqual(exportPage.children.map(node => node.name), manualPage.children.map(node => node.name));
+
+  // Figma ha spostato la selezione sui MASTER; l'agente può comunque ripetere plan/generate sui sorgenti
+  assert.equal(figma.currentPage.name, 'EXPORT');
+  // ora esistono export con gli stessi nomi: il piano li segnala come sostituzioni
+  const conflict = await run('plan', { kind: 'inspect', ...payload });
+  assert.deepEqual(conflict.data.replacements.map(item => item.language).sort(), ['EN', 'NL']);
+
+  // i testi esportati tornano nello snapshot del frame sorgente (per riportarli nell'Excel)
+  const snapshot = await run('snapshot', { frameIds: [sourceFrame.id] });
+  assert.deepEqual(snapshot.data.frames[0].existingTranslations.headline, { EN: 'Sale now', NL: 'Sale now' });
+
+  const again = await run('generate', { ...input, collisionMode: 'replace', confirmedReplacementIds: conflict.data.replacements.map(item => item.id) });
+  assert.equal(again.ok, true, again.error);
+  assert.equal(figma.root.children.find(page => page.name === 'EXPORT').children.length, 2, 'sostituiti, non duplicati');
+});
+
+test('bridge agente: errori del plugin tornano come risposta ok:false', async () => {
+  const { figma, sourceFrame, messages } = pluginHarness();
+  const run = agent(figma, messages);
+  const gone = await run('generate', { ...request(sourceFrame.id), frameIds: ['9:99'] });
+  assert.equal(gone.ok, false);
+  assert.match(gone.error, /non esiste più/);
+  assert.equal((await run('vola', {})).ok, false);
+
+  const failing = pluginHarness({ failOnWrite: true });
+  const failed = await agent(failing.figma, failing.messages)('generate', request(failing.sourceFrame.id));
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /Figma write failed/);
+  assert.equal(failing.figma.root.children.some(page => page.name === 'EXPORT'), false, 'nessun export parziale');
 });

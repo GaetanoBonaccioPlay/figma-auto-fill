@@ -5,15 +5,22 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "server": "node dist/server/index.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "exceljs": "^4.4.0",
+    "ws": "^8.22.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.100.0",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0"
   }

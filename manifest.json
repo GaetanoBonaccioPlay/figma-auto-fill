@@ -7,6 +7,8 @@
   "editorType": ["figma"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"]
+    "allowedDomains": ["none"],
+    "devAllowedDomains": ["ws://localhost:3055", "http://localhost:3055"],
+    "reasoning": "Collegamento opzionale al server MCP locale per la modalità agente"
   }
 }

@@ -6,6 +6,7 @@ import { DEFAULT_LANGUAGE_CODES, DEFAULT_LANGUAGE_SETTINGS, LANGUAGE_GROUPS, mov
 import { readWorkbook, writeWorkbook } from './workbook';
 import { fromTsv, toTsv, gridRange, pasteGrid, type GridPoint } from './grid';
 import { richClipboardCells, richClipboardText } from './rich-text';
+import { startAgentBridge } from './agent-bridge';
 
 type SelectionMessage = { kind: 'selection'; frames: FrameInfo[] };
 type LocalsSourceMessage = { kind: 'locals-source'; frames: FrameInfo[] };
@@ -1094,3 +1095,16 @@ renderFrames();
 renderLanguages();
 renderValidation();
 send({ kind: 'ready' });
+startAgentBridge(connected => {
+  const badge = element('agent-status');
+  badge.textContent = connected ? 'Agente collegato' : 'Agente non collegato';
+  badge.classList.toggle('connected', connected);
+}, () => ({
+  naming: naming(),
+  baseNames: Object.fromEntries(state.baseNames),
+  sectionMode: element<HTMLInputElement>('create-sections').checked
+    ? document.querySelector<HTMLInputElement>('input[name="section-mode"]:checked')?.value as 'locale' | 'base' ?? 'locale'
+    : 'none',
+  targets: [...state.targets],
+  primary: state.primary
+}));

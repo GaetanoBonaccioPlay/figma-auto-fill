@@ -58,3 +58,28 @@ await build({
   target: 'node20',
   logLevel: 'silent'
 });
+
+// Server MCP: ogni modulo è un'entry separata (testabile da tests/); le dipendenze npm restano esterne.
+await build({
+  entryPoints: {
+    index: 'server/index.ts', tools: 'server/tools.ts', bridge: 'server/bridge.ts', brands: 'server/brands.ts',
+    'excel-analyze': 'server/excel-analyze.ts', 'excel-update': 'server/excel-update.ts', match: 'server/match.ts'
+  },
+  outdir: 'dist/server',
+  outExtension: { '.js': '.mjs' },
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  logLevel: 'silent'
+});
+await build({
+  entryPoints: ['src/agent-bridge.ts'],
+  outfile: 'dist/agent-bridge.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  logLevel: 'silent'
+});

@@ -4,6 +4,7 @@ import {
   type FrameInfo, type MarkedSegment, type NameContext, type NamingOptions, type TranslationRow
 } from './core';
 import { DEFAULT_LANGUAGE_SETTINGS, readLanguageSettings, type LanguageSettings } from './language-catalog';
+import type { AgentCommandMessage } from './agent-protocol';
 
 type GenerateRequest = {
   kind: 'generate';
@@ -691,13 +692,79 @@ async function generate(request: GenerateRequest): Promise<{ names: string[]; wa
   }
 }
 
-figma.ui.onmessage = async (message: GenerateRequest | InspectRequest | SaveLanguageSettingsRequest | ReadLocalsRequest | { kind: 'ready' }) => {
+async function planFor(message: InspectRequest): Promise<{ replacements: Replacement[]; selections: Array<{ frame: string; language: string; action: 'master' | 'replace' | 'create' }> }> {
+  const frames = selectedForRequest(message.frameIds);
+  const primary = normalizeLanguage(message.primary);
+  const targets = [...new Set([primary, ...message.targets.map(normalizeLanguage)])];
+  const replacements = await replacementsFor(frames, targets, primary, message.baseNames, message.naming ?? DEFAULT_NAMING);
+  const selections = frames.flatMap(frame => targets.map(language => ({
+    frame: frame.name,
+    language,
+    action: (managedRole(frame) === 'master' && language === primary ? 'master' : replacements.some(item => item.frameId === frame.id && item.language === language) ? 'replace' : 'create') as 'master' | 'replace' | 'create'
+  })));
+  return { replacements, selections };
+}
+
+// Dopo una generazione Figma seleziona i MASTER: per ripetere plan/generate sugli stessi frame sorgente
+// (per esempio dopo le Traduzioni AI) l'agente indica gli id e il plugin ripristina la selezione.
+async function ensureSelection(frameIds: string[]): Promise<void> {
+  if (selectedFrames().map(frame => frame.id).sort().join('|') === [...frameIds].sort().join('|')) return;
+  const frames: FrameNode[] = [];
+  for (const id of frameIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node || node.type !== 'FRAME' || node.removed) throw new Error('Un frame selezionato non esiste più: seleziona di nuovo i frame in Figma e ripeti l’abbinamento');
+    frames.push(node);
+  }
+  const pages = new Set(frames.map(frame => exportParentPage(frame)));
+  const page = [...pages][0];
+  if (pages.size !== 1 || !page) throw new Error('I frame selezionati si trovano su pagine diverse');
+  await figma.setCurrentPageAsync(page);
+  page.selection = frames;
+}
+
+// Comandi inviati dal server MCP tramite il bridge: riusano gli stessi flussi della UI.
+async function runAgentCommand(message: AgentCommandMessage): Promise<unknown> {
+  if (message.command === 'snapshot') {
+    const ids = (message.payload as { frameIds?: string[] } | undefined)?.frameIds;
+    let frames: FrameNode[];
+    if (ids) {
+      frames = [];
+      for (const id of ids) {
+        const node = await figma.getNodeByIdAsync(id);
+        if (node && node.type === 'FRAME') frames.push(node);
+      }
+    } else {
+      frames = selectedFrames();
+    }
+    return { frames: await selectionSnapshotWithExports(frames) };
+  }
+  if (message.command === 'plan' || message.command === 'generate') {
+    await ensureSelection((message.payload as { frameIds: string[] }).frameIds);
+  }
+  if (message.command === 'plan') return planFor(message.payload as InspectRequest);
+  if (message.command === 'generate') {
+    generationInProgress = true;
+    try { return await generate(message.payload as GenerateRequest); }
+    finally { generationInProgress = false; await sendSelection(); }
+  }
+  throw new Error(`Comando sconosciuto: ${String(message.command)}`);
+}
+
+figma.ui.onmessage = async (message: GenerateRequest | InspectRequest | SaveLanguageSettingsRequest | ReadLocalsRequest | AgentCommandMessage | { kind: 'ready' }) => {
   if (message.kind === 'ready') {
     let settings: unknown = DEFAULT_LANGUAGE_SETTINGS;
     try { settings = await figma.clientStorage.getAsync(LANGUAGE_SETTINGS_KEY); }
     catch { /* A fresh configuration is still usable if local storage is unavailable. */ }
     figma.ui.postMessage({ kind: 'language-settings', settings: readLanguageSettings(settings) });
     await sendSelection();
+    return;
+  }
+  if (message.kind === 'agent-command') {
+    try {
+      figma.ui.postMessage({ kind: 'agent-result', id: message.id, ok: true, data: await runAgentCommand(message) });
+    } catch (error) {
+      figma.ui.postMessage({ kind: 'agent-result', id: message.id, ok: false, error: (error as Error).message });
+    }
     return;
   }
   try {
@@ -711,16 +778,7 @@ figma.ui.onmessage = async (message: GenerateRequest | InspectRequest | SaveLang
       selectedForRequest(message.frameIds);
       figma.ui.postMessage({ kind: 'locals-source', frames: snapshot });
     } else if (message.kind === 'inspect') {
-      const frames = selectedForRequest(message.frameIds);
-      const primary = normalizeLanguage(message.primary);
-      const targets = [...new Set([primary, ...message.targets.map(normalizeLanguage)])];
-      const replacements = await replacementsFor(frames, targets, primary, message.baseNames, message.naming ?? DEFAULT_NAMING);
-      const selections = frames.flatMap(frame => targets.map(language => ({
-        frame: frame.name,
-        language,
-        action: managedRole(frame) === 'master' && language === primary ? 'master' : replacements.some(item => item.frameId === frame.id && item.language === language) ? 'replace' : 'create'
-      })));
-      figma.ui.postMessage({ kind: 'generation-plan', replacements, selections });
+      figma.ui.postMessage({ kind: 'generation-plan', ...await planFor(message) });
     } else if (message.kind === 'generate') {
       generationInProgress = true;
       let result: { names: string[]; warnings: string[] };
