@@ -69,3 +69,20 @@ test('rifiuta file che non sono profili o hanno una versione non supportata', as
     assert.match(await readFile(other, 'utf8'), /99/);
   } finally { await cleanup(); }
 });
+
+test('livelli ignorati: salvati nel profilo, voci "re:" validate, round-trip con esportazione', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const store = new BrandStore(join(dir, 'a'));
+    const saved = await store.save(profile({ ignoredLayers: ['To:', '  Reply to:  ', 're:^\\d{1,2} \\w+ \\d{4}'] }));
+    assert.deepEqual(saved.ignoredLayers, ['To:', 'Reply to:', 're:^\\d{1,2} \\w+ \\d{4}']);
+    assert.deepEqual(validateProfile(profile()).ignoredLayers, [], 'default vuoto');
+    assert.throws(() => validateProfile(profile({ ignoredLayers: ['re:('] })), /ignoredLayers.*Espressione regolare non valida/);
+    assert.throws(() => validateProfile(profile({ ignoredLayers: [''] })), /ignoredLayers/);
+    const file = join(dir, 'p.json');
+    await store.exportTo('Acme Italia', file);
+    const receiver = new BrandStore(join(dir, 'b'));
+    await receiver.importFrom(file);
+    assert.deepEqual((await receiver.get('Acme Italia')).ignoredLayers, saved.ignoredLayers);
+  } finally { await cleanup(); }
+});

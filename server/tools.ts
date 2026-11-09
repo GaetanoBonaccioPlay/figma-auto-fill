@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { resolve } from 'node:path';
 import { frameLabel, normalizeLanguage, validateRows, type FrameInfo, type TranslationRow } from '../src/core';
 import type { UiState } from '../src/agent-protocol';
 import { BrandStore, validateProfile, PROFILE_VERSION, type BrandProfile } from './brands';
@@ -8,10 +9,10 @@ import {
   analyzeWorkbook, columnLetter, columnNumber, readSheets, type AnalysisReport
 } from './excel-analyze';
 import {
-  cellToMarkup, defaultOutputPath, planUpdates, writeUpdatedWorkbook
+  cellToMarkup, defaultOutputPath, isGeneratedCopy, planUpdates, writeUpdatedWorkbook
 } from './excel-update';
 import {
-  DEFAULT_SIMILARITY_THRESHOLD, layerId, matchLayers, normalizeText,
+  DEFAULT_SIMILARITY_THRESHOLD, isIgnoredLayer, layerId, matchLayers, normalizeText,
   type ExcelRow, type LayerRef, type MatchResult
 } from './match';
 
@@ -29,11 +30,12 @@ type Session = {
   accepted: Map<string, { layer: LayerRef; row: number }>;
   generated: { frameIds: string[]; languages: string[]; rows: TranslationRow[] } | null;
   ai: Map<string, { row: number; language: string; text: string }>;
+  writtenOutputs: Set<string>;
 };
 
 const newSession = (): Session => ({
   brand: null, analysis: null, excel: null, selection: null, layers: [], match: null,
-  accepted: new Map(), generated: null, ai: new Map()
+  accepted: new Map(), generated: null, ai: new Map(), writtenOutputs: new Set()
 });
 
 export function todayStamp(now = new Date()): string {
@@ -45,9 +47,9 @@ REGOLA GENERALE: davanti a un'incongruenza (lingue del plugin diverse da quelle 
 1. BRAND — chiedi per quale Brand si lavora. Usa list_brand_profiles e poi get_brand_profile (che seleziona il Brand). Se non esiste, proponi di crearlo con save_brand_profile.
 2. EXCEL CLIENTE — chiedi il percorso dell'Excel e chiama analyze_client_excel. Mostra foglio, lingue trovate (intestazione → codice), Colonna sorgente proposta e le differenze con il Profilo brand; chiedi conferma o correzioni.
 3. SELEZIONE — chiedi di selezionare i frame in Figma con il plugin aperto (bridge_status, get_selection).
-4. ABBINAMENTO — chiama match_selection con le colonne confermate. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Registra le decisioni con confirm_matches.
+4. ABBINAMENTO — chiama match_selection con le colonne confermate. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand) e richiama match_selection. Registra le decisioni con confirm_matches.
 5. GENERAZIONE — chiama generate_exports. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
-6. EXCEL AGGIORNATO — chiama write_updated_excel. Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
+6. EXCEL AGGIORNATO — chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
 7. TRADUZIONE AI (facoltativa) — alla fine chiedi SOLO se il designer vuole tradurre le celle vuote (list_empty_cells ne dà il numero). Se sì, traduci rispettando il Glossario brand, fai rivedere le traduzioni, salvale con save_ai_translations e rilancia generate_exports e write_updated_excel.`;
 
 export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; now?: () => Date }): McpServer {
@@ -210,9 +212,11 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
       const frames = await snapshot();
       if (!frames.length) throw new Error('Nessun frame selezionato: seleziona i frame in Figma e riprova');
       session.selection = frames;
-      session.layers = frames.flatMap(frame => frame.textLayers.map(layer => ({
+      const everyLayer = frames.flatMap(frame => frame.textLayers.map(layer => ({
         frameId: frame.id, frame: frameLabel(frame), key: layer.key, text: layer.text, markup: layer.markup
       })));
+      const excluded = everyLayer.filter(layer => isIgnoredLayer(layer, brand.ignoredLayers));
+      session.layers = everyLayer.filter(layer => !excluded.includes(layer));
       const result = matchLayers({ layers: session.layers, rows, confirmed: brand.confirmedMatches, threshold });
       session.match = result;
       session.accepted = new Map(result.exact.map(item => [layerId(item.layer), item]));
@@ -228,12 +232,17 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
       return {
         summary: {
           layers: session.layers.length, exact: result.exact.length, similar: result.similar.length,
-          orphans: result.orphans.length, multiLevel: result.multiLevel.length, emptyLayersSkipped: result.skippedEmpty
+          orphans: result.orphans.length, multiLevel: result.multiLevel.length, emptyLayersSkipped: result.skippedEmpty,
+          excluded: excluded.length
         },
         columns: { source: columnLetter(sourceColumn), languages: Object.fromEntries(Object.entries(languageColumns).map(([code, column]) => [code, columnLetter(column)])) },
         exact: result.exact.map(item => ({ ...ref(item.layer), row: item.row, via: item.via })),
         similar: result.similar.map(item => ({ ...ref(item.layer), row: item.row, score: item.score, excelText: item.rowText })),
         orphans: result.orphans.map(item => ({ ...ref(item.layer), reason: item.reason, row: item.row })),
+        excluded: excluded.map(ref),
+        orphansHint: result.orphans.length
+          ? 'Se alcuni orfani sono livelli di contorno (To:, Reply to:, data, logo) proponi al designer di escluderli con exclude_layers, poi richiama match_selection.'
+          : undefined,
         multiLevel: result.multiLevel.map(cell => ({ row: cell.row, text: cell.text, layers: cell.layers.map(ref) })),
         warnings
       };
@@ -280,6 +289,21 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
         orphans: unmatchedLayers().map(ref),
         rememberedInBrandProfile: saved
       };
+    });
+
+  register('exclude_layers',
+    'Aggiunge o toglie livelli di contorno (To:, Reply to:, data, logo) che non vanno tradotti. Le voci restano nel Profilo brand e valgono anche nelle campagne successive. Una voce è il nome o il testo del livello; con prefisso "re:" è un\'espressione regolare. Richiama match_selection dopo la modifica.',
+    { add: z.array(z.string()).optional(), remove: z.array(z.string()).optional() },
+    async ({ add, remove }) => {
+      const brand = requireBrand();
+      const lower = (value: string) => value.trim().toLowerCase();
+      const removed = new Set((remove ?? []).map(lower));
+      const kept = brand.ignoredLayers.filter(item => !removed.has(lower(item)));
+      const merged = [...kept];
+      for (const item of add ?? []) if (!merged.some(existing => lower(existing) === lower(item))) merged.push(item.trim());
+      session.brand = await deps.brands.save({ ...brand, ignoredLayers: merged });
+      session.match = null; session.accepted.clear(); session.generated = null;
+      return { ignoredLayers: session.brand.ignoredLayers, next: 'Richiama match_selection per aggiornare l\'abbinamento.' };
     });
 
   // ---------- generazione in Figma ----------
@@ -367,22 +391,35 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
     'Scrive la copia <nome>_updated.xlsx con i testi effettivamente usati in Figma (correzioni manuali incluse), i Livelli orfani in coda e le eventuali Traduzioni AI. L\'originale non viene toccato; le celle già piene non si sovrascrivono senza conferma (overwrite).',
     {
       output_path: z.string().optional(),
-      overwrite: z.array(z.object({ row: z.number().int(), language: z.string() })).optional().describe('Celle piene che il designer ha confermato di sovrascrivere')
+      overwrite: z.array(z.object({ row: z.number().int(), language: z.string() })).optional().describe('Celle piene che il designer ha confermato di sovrascrivere'),
+      only_used_rows: z.boolean().optional().describe('Default true: la copia contiene solo le righe usate dai frame. false = tutte le righe del cliente'),
+      add_orphans: z.boolean().optional().describe('Default false: aggiunge in coda i Livelli orfani. Solo se il designer lo chiede')
     },
-    async ({ output_path, overwrite }) => {
+    async ({ output_path, overwrite, only_used_rows, add_orphans }) => {
       const excel = requireExcel();
       const brand = requireBrand();
       const figma = session.generated ? await snapshot(session.generated.frameIds) : [];
       const plan = planUpdates({
         rows: excel.rows, languageColumns: excel.languageColumns, primary: brand.primaryLanguage, sourceColumn: excel.sourceColumn,
-        matches: [...session.accepted.values()], orphans: unmatchedLayers(),
+        matches: [...session.accepted.values()], orphans: add_orphans ? unmatchedLayers() : [],
         generated: session.generated?.rows ?? [], figma, ai: [...session.ai.values()],
         overwrite: (overwrite ?? []).map(item => ({ row: item.row, language: normalizeLanguage(item.language) })), lastRow: excel.lastRow
       });
       const output = output_path ?? defaultOutputPath(excel.path);
-      await writeUpdatedWorkbook({ input: excel.path, output, sheet: excel.sheet, plan, idColumn: excel.idColumn });
+      const usedRows = [...new Set([...session.accepted.values()].map(item => item.row))];
+      const { removedRows } = await writeUpdatedWorkbook({
+        input: excel.path, output, sheet: excel.sheet, plan, idColumn: excel.idColumn,
+        keepRows: only_used_rows === false ? undefined : usedRows, headerRow: excel.headerRow,
+        // si rigenera solo una copia scritta da noi (in questa sessione o riconosciuta dal marcatore), mai un altro file
+        allowOverwrite: session.writtenOutputs.has(resolve(output)) || await isGeneratedCopy(output)
+      });
+      session.writtenOutputs.add(resolve(output));
+      const notAdded = add_orphans ? [] : unmatchedLayers();
       return {
         output,
+        rows: { kept: usedRows.length, removed: removedRows, onlyUsedRows: only_used_rows !== false,
+          note: removedRows ? 'Le righe sono state rinumerate nella copia; i numeri nella lista "written" sono quelli dell\'Excel originale.' : undefined },
+        orphansNotAdded: notAdded.length ? notAdded.map(ref) : undefined,
         written: plan.writes.map(item => ({ row: item.row, column: columnLetter(item.column), language: item.language, source: item.source, text: item.text })),
         addedRows: plan.newRows.map(item => ({ row: item.row, id: item.id })),
         conflicts: plan.conflicts,

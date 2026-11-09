@@ -27,6 +27,16 @@ const confirmedMatch = z.object({
   rowSource: z.string().min(1)
 });
 
+// Livelli di contorno (To:, Reply to:, date, logo) che non vanno mai tradotti. Una voce è il nome o il testo del
+// livello; con prefisso "re:" è un'espressione regolare (senza distinzione tra maiuscole e minuscole).
+const ignoredLayers = z.array(z.string().trim().min(1)).default([]).superRefine((items, context) => {
+  items.forEach((item, index) => {
+    if (!item.startsWith('re:')) return;
+    try { new RegExp(item.slice(3), 'i'); }
+    catch { context.addIssue({ code: 'custom', path: [index], message: `Espressione regolare non valida: ${item}` }); }
+  });
+});
+
 export const brandProfileSchema = z.object({
   version: z.literal(PROFILE_VERSION),
   name: z.string().trim().min(1),
@@ -38,6 +48,7 @@ export const brandProfileSchema = z.object({
   languages: z.array(languageCode).default([]),
   sections: z.enum(['none', 'locale', 'base']).default('none'),
   glossary: z.array(glossaryEntry).default([]),
+  ignoredLayers,
   confirmedMatches: z.array(confirmedMatch).default([])
 });
 

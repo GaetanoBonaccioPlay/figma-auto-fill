@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { matchLayers, normalizeText, similarity } from '../dist/server/match.mjs';
+import { isIgnoredLayer, matchLayers, normalizeText, similarity } from '../dist/server/match.mjs';
 
 const layer = (frameId, key, text) => ({ frameId, frame: `Frame ${frameId}`, key, text });
 const row = (n, source, id) => ({ row: n, id, source, values: { IT: source } });
@@ -81,4 +81,17 @@ test('la soglia di similarità è configurabile', () => {
   const input = { layers: [layer('A', 'x', 'Spedizione gratuita sopra 60 euro')], rows: [row(2, 'Spedizione gratuita sopra 50 euro')] };
   assert.equal(matchLayers(input).similar.length, 1);
   assert.equal(matchLayers({ ...input, threshold: 0.99 }).similar.length, 0);
+});
+
+test('livelli ignorati: per nome, per testo normalizzato o con espressione regolare', () => {
+  const patterns = ['To:', 'reply to', 're:^\\d{1,2} [a-z]+ \\d{4}', 'Logo'];
+  const ignored = (key, text) => isIgnoredLayer({ key, text }, patterns);
+  assert.equal(ignored('To:', 'To:'), true);
+  assert.equal(ignored('Reply to:', 'Reply to:'), true, 'il testo si confronta senza punteggiatura finale');
+  assert.equal(ignored('29 June 2022 18.00', '29 June 2022 18.00'), true, 'regex sul nome');
+  assert.equal(ignored('data', '3 JULY 2026 09.00'), true, 'regex sul testo, senza distinzione di maiuscole');
+  assert.equal(ignored('logo', 'The North Face'), true, 'per nome, senza distinzione di maiuscole');
+  assert.equal(ignored('headline', 'FALL WINTER 2027'), false);
+  assert.equal(ignored('toast', 'Toast'), false, 'nessuna corrispondenza parziale');
+  assert.equal(isIgnoredLayer({ key: 'x', text: 'y' }, []), false);
 });

@@ -5,6 +5,20 @@ export type ExcelRow = { row: number; id?: string; source: string; values: Recor
 
 export const DEFAULT_SIMILARITY_THRESHOLD = 0.8;
 
+// Un livello è ignorato se una voce coincide con il suo nome o con il suo testo (normalizzato),
+// oppure, con prefisso "re:", se l'espressione regolare ne riconosce nome o testo.
+export function isIgnoredLayer(layer: { key: string; text: string }, patterns: string[]): boolean {
+  const key = layer.key.trim().toLowerCase();
+  const text = normalizeText(layer.text);
+  return patterns.some(pattern => {
+    if (pattern.startsWith('re:')) {
+      const expression = new RegExp(pattern.slice(3), 'i');
+      return expression.test(layer.key) || expression.test(layer.text);
+    }
+    return pattern.trim().toLowerCase() === key || normalizeText(pattern) === text;
+  });
+}
+
 const TAGS = /<\/?[biusBIUS]>/g;
 
 // Chiave di confronto: senza tag di formattazione, spazi multipli, maiuscole e punteggiatura finale.

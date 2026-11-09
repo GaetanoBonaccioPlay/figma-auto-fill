@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { existsSync, linkSync, symlinkSync } from 'node:fs';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -133,7 +134,8 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
       rows: [
         ['ID', 'Italiano', 'English', 'Deutsch', 'Français', 'Note'],
         ['H1', 'Scopri la nuova collezione!', 'Discover the new collection', 'Entdecke die neue Kollektion', '', 'ok'],
-        ['C1', 'Acquista ora', 'Shop now', '', '', '']
+        ['C1', 'Acquista ora', 'Shop now', '', '', ''],
+        ['X1', 'Testo non usato dai frame', 'Text not used by the frames', '', '', '']
       ]
     }]);
     const original = await hash(excel);
@@ -159,7 +161,7 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.equal((await env.call('bridge_status')).data.connected, true);
     assert.equal((await env.call('get_selection')).data.frames[0].textLayers.length, 3);
     const match = (await env.call('match_selection')).data;
-    assert.deepEqual(match.summary, { layers: 3, exact: 2, similar: 0, orphans: 1, multiLevel: 0, emptyLayersSkipped: 0 });
+    assert.deepEqual(match.summary, { layers: 3, exact: 2, similar: 0, orphans: 1, multiLevel: 0, emptyLayersSkipped: 0, excluded: 0 });
     assert.deepEqual(match.orphans.map(item => item.key), ['legal']);
     const confirm = (await env.call('confirm_matches', { accept_similar: 'all' })).data;
     assert.equal(confirm.matched, 2);
@@ -186,12 +188,26 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     const written = (await env.call('write_updated_excel')).data;
     assert.equal(written.output, join(env.dir, 'cliente_updated.xlsx'));
     assert.deepEqual(written.written.map(item => [item.row, item.column, item.language, item.text, item.source]), [[3, 'D', 'DE', 'Jetzt kaufen', 'figma:Hero_IT']]);
-    assert.deepEqual(written.addedRows, [{ row: 4, id: 'Hero_IT/legal' }]);
+    assert.deepEqual(written.addedRows, [], 'di base gli orfani non vengono aggiunti');
+    assert.deepEqual(written.orphansNotAdded.map(item => item.key), ['legal']);
+    assert.deepEqual([written.rows.kept, written.rows.removed, written.rows.onlyUsedRows], [2, 1, true]);
     assert.deepEqual(written.conflicts, []);
     assert.equal(await hash(excel), original);
     let cells = await readCells(written.output, 'Campagna AW26');
+    assert.equal(cells.sheet.rowCount, 3, 'intestazione + solo le 2 righe usate dai frame');
     assert.equal(cells.text(3, 4), 'Jetzt kaufen');
+    assert.equal(cells.text(4, 2), '', 'la riga non usata non c\'è più');
+
+    // su richiesta: orfani in coda e/o tutte le righe del cliente
+    const withOrphans = (await env.call('write_updated_excel', { add_orphans: true })).data;
+    assert.deepEqual(withOrphans.addedRows, [{ row: 5, id: 'Hero_IT/legal' }]);
+    assert.equal(withOrphans.orphansNotAdded, undefined);
+    cells = await readCells(withOrphans.output, 'Campagna AW26');
     assert.equal(cells.text(4, 2), 'Termini applicabili');
+    const everything = (await env.call('write_updated_excel', { only_used_rows: false })).data;
+    assert.deepEqual([everything.rows.removed, everything.rows.onlyUsedRows], [0, false]);
+    assert.equal((await readCells(everything.output, 'Campagna AW26')).sheet.rowCount, 4);
+    cells = await readCells((await env.call('write_updated_excel')).data.output, 'Campagna AW26');
 
     // conflitto su cella piena: non toccata finché il designer non conferma
     state.manual = { cta: { DE: 'Jetzt kaufen' }, headline: { EN: 'Discover our new collection' } };
@@ -332,5 +348,108 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
       assert.deepEqual(state.generated.baseNames, { '1:1': 'Hero' }, 'senza stato UI vale il nome base del frame');
       assert.equal(state.generated.sectionMode, 'none');
     } finally { FRAME.textLayers = original; }
+  } finally { await env.close(); }
+});
+
+test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non contano come orfani', async () => {
+  const env = await setup();
+  try {
+    const frame = { ...FRAME, textLayers: [
+      { id: 'a', key: 'cta', text: 'Acquista ora', markup: 'Acquista ora' },
+      { id: 'b', key: 'To:', text: 'To:', markup: 'To:' },
+      { id: 'c', key: 'Reply to:', text: 'Reply to:', markup: 'Reply to:' },
+      { id: 'd', key: '29 June 2022 18.00', text: '29 June 2022 18.00', markup: '29 June 2022 18.00' }
+    ] };
+    const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['English', 'French'], ['Acquista ora', 'Commander']] }]);
+    await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR'] });
+    await env.call('analyze_client_excel', { path: excel });
+    const ws = new WebSocket(`ws://127.0.0.1:${env.bridge.port}`);
+    ws.on('open', () => ws.send(JSON.stringify({ hello: 'figma-auto-fill-plugin' })));
+    ws.on('message', raw => { const r = JSON.parse(String(raw)); ws.send(JSON.stringify({ id: r.id, ok: true, data: { frames: [frame] } })); });
+    for (let i = 0; i < 100 && !env.bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10));
+
+    const first = (await env.call('match_selection')).data;
+    assert.deepEqual([first.summary.orphans, first.summary.excluded], [3, 0]);
+    assert.match(first.orphansHint, /exclude_layers/);
+
+    const added = (await env.call('exclude_layers', { add: ['To:', 'Reply to:', 're:^\\d{1,2} [a-z]+ \\d{4}'] })).data;
+    assert.equal(added.ignoredLayers.length, 3);
+    assert.equal((await env.call('generate_exports')).isError, true, 'dopo la modifica serve un nuovo abbinamento');
+    assert.deepEqual((await env.call('get_brand_profile', { name: 'TNF' })).data.ignoredLayers, added.ignoredLayers, 'persistite nel profilo');
+
+    const second = (await env.call('match_selection')).data;
+    assert.deepEqual([second.summary.exact, second.summary.orphans, second.summary.excluded], [1, 0, 3]);
+    assert.deepEqual(second.excluded.map(item => item.key), ['To:', 'Reply to:', '29 June 2022 18.00']);
+    assert.equal(second.orphansHint, undefined);
+
+    // una sessione nuova con lo stesso Brand parte già con le esclusioni
+    await env.call('get_brand_profile', { name: 'TNF' });
+    assert.equal((await env.call('match_selection')).data.summary.excluded, 3);
+
+    const invalid = await env.call('exclude_layers', { add: ['re:('] });
+    assert.equal(invalid.isError, true);
+    assert.match(invalid.text, /Espressione regolare non valida/);
+    const removed = (await env.call('exclude_layers', { add: ['to:'], remove: ['TO:', 'reply to:'] })).data;
+    assert.deepEqual(removed.ignoredLayers, ['re:^\\d{1,2} [a-z]+ \\d{4}', 'to:'], 'rimozione senza distinzione di maiuscole, aggiunta in coda');
+    ws.close();
+  } finally { await env.close(); }
+});
+
+test('l\'Excel originale non viene mai modificato, in nessun passo del dialogo né con percorsi di output ostili', async () => {
+  const env = await setup();
+  const state = { existing: [], exports: {}, manual: { cta: { DE: 'Jetzt kaufen' } } };
+  const fingerprint = async path => { const info = await stat(path); return `${await hash(path)}|${info.size}|${info.mtimeMs}|${info.ino}`; };
+  try {
+    const excel = await writeFixture(join(env.dir, 'cliente.xlsx'), [{
+      name: 'Campagna', rows: [
+        ['ID', 'Italiano', 'English', 'Deutsch'],
+        ['H1', 'Scopri la nuova collezione', 'Discover the new collection', ''],
+        ['C1', 'Acquista ora', 'Shop now', ''],
+        ['X1', 'Riga non usata', 'Unused', '']
+      ]
+    }]);
+    const untouched = await fingerprint(excel);
+    const stillUntouched = async step => assert.equal(await fingerprint(excel), untouched, `originale modificato dopo: ${step}`);
+    const other = await writeFixture(join(env.dir, 'altro.xlsx'), [{ name: 'S', rows: [['x']] }]);
+    const otherBefore = await fingerprint(other);
+
+    await env.call('save_brand_profile', { name: 'Acme', primaryLanguage: 'IT', languages: ['IT', 'EN', 'DE'] });
+    await env.call('analyze_client_excel', { path: excel }); await stillUntouched('analyze_client_excel');
+    await env.connectPlugin(state);
+    await env.call('match_selection'); await stillUntouched('match_selection');
+    await env.call('confirm_matches', { accept_similar: 'all' }); await stillUntouched('confirm_matches');
+    await env.call('generate_exports'); await stillUntouched('generate_exports');
+    await env.call('list_empty_cells'); await stillUntouched('list_empty_cells');
+    await env.call('save_ai_translations', { translations: [{ row: 2, language: 'DE', text: 'Entdecke die neue Kollektion' }] });
+    await stillUntouched('save_ai_translations');
+
+    // tutte le varianti di scrittura valide producono copie, mai l'originale
+    for (const args of [{}, { add_orphans: true }, { only_used_rows: false }, { only_used_rows: false, add_orphans: true }, { overwrite: [{ row: 2, language: 'DE' }] }]) {
+      const written = await env.call('write_updated_excel', args);
+      assert.equal(written.isError, false, written.text);
+      assert.notEqual(written.data.output, excel);
+      await stillUntouched(`write_updated_excel ${JSON.stringify(args)}`);
+    }
+
+    // percorsi di output che portano all'originale (o a un altro file): rifiutati, nessun file toccato
+    await mkdir(join(env.dir, 'sub'));
+    symlinkSync(excel, join(env.dir, 'link.xlsx'));
+    linkSync(excel, join(env.dir, 'hard.xlsx'));
+    const hostile = [excel, `${env.dir}/sub/../cliente.xlsx`, join(env.dir, 'link.xlsx'), join(env.dir, 'hard.xlsx'), join(env.dir, 'altro.xlsx'), join(env.dir, 'out.txt')];
+    if (existsSync(join(env.dir, 'CLIENTE.xlsx'))) hostile.push(join(env.dir, 'CLIENTE.xlsx'));
+    for (const output_path of hostile) {
+      const refused = await env.call('write_updated_excel', { output_path });
+      assert.equal(refused.isError, true, `doveva rifiutare ${output_path}`);
+      assert.match(refused.text, /non può coincidere|esiste già|estensione/);
+      await stillUntouched(`output_path ${output_path}`);
+    }
+    assert.equal(await fingerprint(other), otherBefore, 'un altro file esistente non viene sovrascritto');
+
+    // un nome nuovo va bene, e si può rigenerare nella stessa sessione
+    const mine = join(env.dir, 'consegna.xlsx');
+    assert.equal((await env.call('write_updated_excel', { output_path: mine })).isError, false);
+    assert.equal((await env.call('write_updated_excel', { output_path: mine })).isError, false);
+    await stillUntouched('copia con nome personalizzato');
+    assert.equal((await readdir(env.dir)).some(name => name.includes('.tmp-')), false, 'nessun file temporaneo rimasto');
   } finally { await env.close(); }
 });

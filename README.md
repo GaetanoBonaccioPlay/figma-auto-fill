@@ -169,22 +169,23 @@ Il collegamento vale solo per il plugin importato da manifest (modalità svilupp
 | 1. Brand | L'agente chiede il Brand e carica il suo Profilo brand (modello del nome, lingue, section, glossario) | `list_brand_profiles`, `get_brand_profile`, `save_brand_profile` |
 | 2. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e propone la Colonna sorgente; tu confermi lingue e mappatura. In caso di differenze con il profilo vale l'Excel | `analyze_client_excel` |
 | 3. Selezione | Legge i frame selezionati e i livelli di testo visibili | `bridge_status`, `get_selection` |
-| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo | `match_selection`, `confirm_matches` |
+| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand | `match_selection`, `exclude_layers`, `confirm_matches` |
 | 5. Generazione | Il plugin crea gli export come nel flusso manuale. Se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
-| 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` | `write_updated_excel` |
+| 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` con le sole righe usate dai frame | `write_updated_excel` |
 | 7. Traduzione AI | Solo se la chiedi: traduce le celle vuote rispettando il glossario | `list_empty_cells`, `save_ai_translations` |
 
 ### Regole sull'Excel
 
-- L'originale non viene mai modificato: le scritture vanno nella copia `_updated.xlsx`. Fogli, larghezze e stili del cliente restano, ma ExcelJS può non conservare elementi avanzati (grafici, tabelle pivot, immagini): controlla il file prima di rimandarlo.
+- L'originale non viene mai modificato: il file del cliente è solo letto e le scritture vanno nella copia `_updated.xlsx`. Il controllo è sul file e non sul testo del percorso, quindi un `output_path` che porta all'originale (anche con `..`, link simbolici, hard link o maiuscole diverse) viene rifiutato. Un file già esistente si sovrascrive solo se è una copia generata da questo strumento, riconosciuta da un marcatore nelle proprietà del documento. La copia viene scritta in un file temporaneo e poi rinominata, così un errore non lascia file corrotti. Fogli, larghezze e stili del cliente restano, ma ExcelJS può non conservare elementi avanzati (grafici, tabelle pivot, immagini): controlla il file prima di rimandarlo.
+- La copia contiene **solo le righe usate dai frame** (più l'intestazione): le altre righe del cliente vengono tolte e le righe si rinumerano, con valori, stili e note del cliente conservati. Con `only_used_rows: false` la copia resta completa. Gli altri fogli non si toccano.
 - Una cella già piena **non** viene sovrascritta. Se differisce da Figma l'agente te lo segnala come conflitto, e si scrive solo con la tua conferma (`overwrite`).
 - Non finisce nell'Excel il testo di *fallback*: una cella vuota resta vuota finché in Figma nessuno scrive una traduzione vera.
-- Le celle modificate sono evidenziate (giallo da Figma, azzurro Traduzione AI, arancio righe aggiunte) e hanno una nota con la fonte. I Livelli orfani vengono aggiunti in coda, con colonna ID `Frame/chiave` se il foglio ha una colonna ID.
+- Le celle modificate sono evidenziate (giallo da Figma, azzurro Traduzione AI, arancio righe aggiunte) e hanno una nota con la fonte. I Livelli orfani **non** vengono aggiunti: l'agente li elenca, e solo se lo chiedi (`add_orphans`) finiscono in coda, con colonna ID `Frame/chiave` se il foglio ha una colonna ID.
 - Una **Cella multi-livello** (il testo di più livelli nella stessa cella) non viene abbinata: l'agente la segnala e la sistemi tu nel file o in Figma.
 
 ### Profili brand
 
-Ogni Brand è un file JSON nella cartella `brand-profiles/` del progetto (cambiabile con `FIGMA_AUTOFILL_BRANDS_DIR`). Contiene modello del nome e numero iniziale, lingua principale, lingue abituali, organizzazione in section, glossario e gli **Abbinamenti confermati**, che alle sessioni successive risultano esatti. Per condividerlo con i colleghi usa `export_brand_profile` (crea un file) e `import_brand_profile` (non sovrascrive un profilo con lo stesso nome senza `overwrite`; con `rename` lo importa con un altro nome).
+Ogni Brand è un file JSON nella cartella `brand-profiles/` del progetto (cambiabile con `FIGMA_AUTOFILL_BRANDS_DIR`). Contiene modello del nome e numero iniziale, lingua principale, lingue abituali, organizzazione in section, glossario, i **Livelli esclusi** e gli **Abbinamenti confermati**, che alle sessioni successive risultano esatti. I Livelli esclusi sono voci con il nome o il testo del livello (`To:`, `Reply to:`) oppure, con prefisso `re:`, un'espressione regolare (per esempio `re:^\d{1,2} \w+ \d{4}` per le date). Per condividerlo con i colleghi usa `export_brand_profile` (crea un file) e `import_brand_profile` (non sovrascrive un profilo con lo stesso nome senza `overwrite`; con `rename` lo importa con un altro nome).
 
 ### Sicurezza
 
