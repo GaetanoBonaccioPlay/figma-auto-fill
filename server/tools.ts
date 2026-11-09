@@ -90,11 +90,15 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
   const ref = (layer: LayerRef) => ({ frame: layer.frame, key: layer.key, text: layer.text });
 
   // ---------- bridge ----------
-  register('bridge_status', 'Stato del collegamento con il plugin Figma Auto Fill (deve essere aperto in Figma Desktop).', {}, async () => ({
-    connected: deps.bridge.connected,
-    error: deps.bridge.startError,
-    hint: deps.bridge.connected ? undefined : 'Apri il plugin in Figma Desktop: Plugins → Development → Figma Auto Fill'
-  }));
+  register('bridge_status', 'Stato del collegamento con il plugin Figma Auto Fill (deve essere aperto in Figma Desktop).', {}, async () => {
+    // Se la porta è di un'altra sessione Claude, se la fa cedere: lo stato riflette questa sessione.
+    await deps.bridge.claim?.();
+    return {
+      connected: deps.bridge.connected,
+      error: deps.bridge.connected ? null : deps.bridge.startError,
+      hint: deps.bridge.connected ? undefined : 'Apri il plugin in Figma Desktop: Plugins → Development → Figma Auto Fill'
+    };
+  });
 
   register('get_selection', 'Frame attualmente selezionati in Figma con i livelli di testo visibili (chiave e testo).', {}, async () => {
     const frames = await snapshot();

@@ -22,9 +22,17 @@ async function main(): Promise<void> {
   const server = createMcpServer({ bridge, brands: new BrandStore(brandsDir) });
   await server.connect(new StdioServerTransport());
 
-  const shutdown = (): void => { void bridge.close().finally(() => process.exit(0)); };
+  // Il processo deve uscire davvero quando il client chiude: se restasse appeso terrebbe la porta.
+  let stopping = false;
+  const shutdown = (): void => {
+    if (stopping) return;
+    stopping = true;
+    setTimeout(() => process.exit(0), 1000).unref();
+    void bridge.close().finally(() => process.exit(0));
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.stdin.on('end', shutdown);
   process.stdin.on('close', shutdown);
 }
 
