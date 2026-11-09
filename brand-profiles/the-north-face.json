@@ -1,6 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "The North Face",
+  "revision": 1,
   "naming": {
     "template": "{Nome}",
     "start": 1
@@ -21,5 +22,143 @@
   ],
   "sections": "none",
   "glossary": [],
-  "confirmedMatches": []
+  "ignoredLayers": [],
+  "confirmedMatches": [],
+  "excelModels": [
+    {
+      "sheet": "sections",
+      "headerRow": 1,
+      "headers": [
+        {
+          "column": 2,
+          "header": "en_uk",
+          "code": "EN_GB"
+        },
+        {
+          "column": 3,
+          "header": "en_dk",
+          "code": "EN_DK"
+        },
+        {
+          "column": 4,
+          "header": "en_fi",
+          "code": "EN_FI"
+        },
+        {
+          "column": 5,
+          "header": "en_ie",
+          "code": "EN_IE"
+        },
+        {
+          "column": 6,
+          "header": "en_lu",
+          "code": "EN_LU"
+        },
+        {
+          "column": 7,
+          "header": "en_se",
+          "code": "EN_SE"
+        },
+        {
+          "column": 8,
+          "header": "de_de",
+          "code": "DE_DE"
+        },
+        {
+          "column": 9,
+          "header": "de_at",
+          "code": "DE_AT"
+        },
+        {
+          "column": 10,
+          "header": "de_ch",
+          "code": "DE_CH"
+        },
+        {
+          "column": 11,
+          "header": "de_lu",
+          "code": "DE_LU"
+        },
+        {
+          "column": 12,
+          "header": "es_es",
+          "code": "ES_ES"
+        },
+        {
+          "column": 13,
+          "header": "fr_fr",
+          "code": "FR_FR"
+        },
+        {
+          "column": 14,
+          "header": "fr_be",
+          "code": "FR_BE"
+        },
+        {
+          "column": 15,
+          "header": "fr_ch",
+          "code": "FR_CH"
+        },
+        {
+          "column": 16,
+          "header": "it_it",
+          "code": "IT_IT"
+        },
+        {
+          "column": 17,
+          "header": "it_ch",
+          "code": "IT_CH"
+        },
+        {
+          "column": 18,
+          "header": "nl_nl",
+          "code": "NL_NL"
+        },
+        {
+          "column": 19,
+          "header": "nl_be",
+          "code": "NL_BE"
+        },
+        {
+          "column": 20,
+          "header": "pl_pl",
+          "code": "PL_PL"
+        },
+        {
+          "column": 21,
+          "header": "pt_pt",
+          "code": "PT_PT"
+        },
+        {
+          "column": 22,
+          "header": "cs_cz",
+          "code": "CS_CZ"
+        },
+        {
+          "column": 23,
+          "header": "sv_se",
+          "code": "SV_SE"
+        }
+      ],
+      "labels": [
+        "0.image",
+        "0.filter",
+        "0.title",
+        "0.body",
+        "1.image",
+        "1.filter",
+        "1.title",
+        "1.body",
+        "2.image",
+        "2.filter",
+        "2.title",
+        "2.body",
+        "3.image",
+        "3.filter",
+        "3.title",
+        "3.body"
+      ],
+      "sourceColumn": 2
+    }
+  ]
 }

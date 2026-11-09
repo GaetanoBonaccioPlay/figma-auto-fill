@@ -70,3 +70,22 @@ test('segnala lingua principale assente, foglio inesistente e lingue duplicate',
     assert.deepEqual(analyzeSheet({ name: 'vuoto', rows: [['a', 'b']] }).languageColumns, []);
   } finally { await cleanup(); }
 });
+
+test('un foglio formattato fino all\'ultima riga di Excel si legge fino all\'ultimo valore, senza bloccarsi', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const ExcelJS = (await import('exceljs')).default;
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('main');
+    sheet.addRow(['', 'en_GB', 'fr_FR']);
+    sheet.addRow(['subjectline', 'Gear up', 'Équipez-vous']);
+    // come negli Excel reali: stile applicato a tutta la colonna fino alla riga 1.048.576
+    sheet.getRow(1048576).getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+    const path = join(dir, 'formattato.xlsx');
+    await workbook.xlsx.writeFile(path);
+    const started = Date.now();
+    const [read] = await readSheets(path);
+    assert.ok(Date.now() - started < 5000, 'lettura rapida');
+    assert.deepEqual(read.rows, [['', 'en_GB', 'fr_FR'], ['subjectline', 'Gear up', 'Équipez-vous']]);
+  } finally { await cleanup(); }
+});

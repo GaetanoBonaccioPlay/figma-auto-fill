@@ -514,7 +514,15 @@ export type ModelSource = {
   languageColumns: Array<{ column: number; code: string }>; idColumn?: number; sourceColumn?: number;
 };
 
-// Estrae il Modello Excel: intestazioni e Etichette ricorrenti (valori brevi delle colonne non di lingua e non ID).
+// Intestazioni delle colonne-chiave, quelle che nominano il campo di ogni riga. Una colonna con un'altra intestazione
+// (per esempio una lingua non riconosciuta come `AT` o `Dutch NLNL`, o `Tags`) può contenere testo del cliente e non si usa.
+const LABEL_HEADERS = new Set([
+  '', 'context', 'contesto', 'field', 'campo', 'key', 'chiave', 'label', 'etichetta', 'element', 'elemento', 'name', 'nome',
+  'section', 'sezione', 'block', 'blocco', 'module', 'modulo', 'component', 'componente', 'type', 'tipo', 'placement',
+  'description', 'descrizione', 'string', 'stringa', 'copy element', 'asset'
+]);
+
+// Estrae il Modello Excel: intestazioni ed Etichette ricorrenti (valori brevi delle colonne-chiave).
 export function extractExcelModel(source: ModelSource): ExcelModel {
   const languageByColumn = new Map(source.languageColumns.map(item => [item.column, item.code]));
   const headerCells = source.rows[source.headerRow - 1] ?? [];
@@ -524,7 +532,8 @@ export function extractExcelModel(source: ModelSource): ExcelModel {
     return header.trim() ? [{ column, header: header.trim(), ...(code ? { code } : {}) }] : [];
   });
   const labelColumns = headerCells.map((_, index) => index + 1)
-    .filter(column => !languageByColumn.has(column) && column !== source.idColumn && column !== source.sourceColumn);
+    .filter(column => !languageByColumn.has(column) && column !== source.idColumn && column !== source.sourceColumn
+      && LABEL_HEADERS.has(fold(headerCells[column - 1] ?? '')));
   const labels: string[] = [];
   const seen = new Set<string>();
   for (const row of source.rows.slice(source.headerRow)) {
@@ -552,6 +561,9 @@ const dice = (a: Set<string>, b: Set<string>): number => {
   return (2 * common) / (a.size + b.size);
 };
 
+const labelWords = (labels: string[]): Set<string> =>
+  new Set(labels.flatMap(label => fold(label).split(/[^a-z]+/)).filter(word => word.length > 1));
+
 export type ModelSimilarity = { score: number; common: { sheet: boolean; headers: string[]; labels: string[] } };
 
 // Somiglianza tra due Modelli Excel (0–1). Le Etichette ricorrenti pesano più delle intestazioni, spesso generiche.
@@ -562,7 +574,8 @@ export function modelSimilarity(a: ExcelModel, b: ExcelModel): ModelSimilarity {
   const labelsB = new Set(b.labels.map(fold));
   const sheet = fold(a.sheet) === fold(b.sheet);
   const parts: Array<[number, number]> = [[sheet ? 1 : 0, 0.15], [dice(headersA, headersB), 0.35]];
-  if (labelsA.size && labelsB.size) parts.push([dice(labelsA, labelsB), 0.5]);
+  // Le etichette cambiano un po' a ogni campagna ("Subject Line Option 1 Launch Members"): conta anche il lessico comune.
+  if (labelsA.size && labelsB.size) parts.push([Math.max(dice(labelsA, labelsB), dice(labelWords(a.labels), labelWords(b.labels))), 0.5]);
   const weight = parts.reduce((total, [, w]) => total + w, 0);
   const score = Math.round((parts.reduce((total, [value, w]) => total + value * w, 0) / weight) * 100) / 100;
   return {

@@ -1,6 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "Columbia",
+  "revision": 1,
   "naming": {
     "template": "{Nome}",
     "start": 1
@@ -15,5 +16,282 @@
   ],
   "sections": "none",
   "glossary": [],
-  "confirmedMatches": []
+  "ignoredLayers": [],
+  "confirmedMatches": [],
+  "excelModels": [
+    {
+      "sheet": "main",
+      "headerRow": 1,
+      "headers": [
+        {
+          "column": 2,
+          "header": "en_GB",
+          "code": "EN_GB"
+        },
+        {
+          "column": 3,
+          "header": "en_IE",
+          "code": "EN_IE"
+        },
+        {
+          "column": 4,
+          "header": "en_FI",
+          "code": "EN_FI"
+        },
+        {
+          "column": 5,
+          "header": "en_NL",
+          "code": "EN_NL"
+        },
+        {
+          "column": 6,
+          "header": "en_BE",
+          "code": "EN_BE"
+        },
+        {
+          "column": 7,
+          "header": "fr_FR",
+          "code": "FR_FR"
+        },
+        {
+          "column": 8,
+          "header": "fr_BE",
+          "code": "FR_BE"
+        },
+        {
+          "column": 9,
+          "header": "de_DE",
+          "code": "DE_DE"
+        },
+        {
+          "column": 10,
+          "header": "de_AT",
+          "code": "DE_AT"
+        },
+        {
+          "column": 11,
+          "header": "es_ES",
+          "code": "ES_ES"
+        },
+        {
+          "column": 12,
+          "header": "it_IT",
+          "code": "IT_IT"
+        },
+        {
+          "column": 14,
+          "header": "en_GB",
+          "code": "EN_GB"
+        },
+        {
+          "column": 15,
+          "header": "en_IE",
+          "code": "EN_IE"
+        },
+        {
+          "column": 16,
+          "header": "en_FI",
+          "code": "EN_FI"
+        },
+        {
+          "column": 17,
+          "header": "en_NL",
+          "code": "EN_NL"
+        },
+        {
+          "column": 18,
+          "header": "en_BE",
+          "code": "EN_BE"
+        },
+        {
+          "column": 19,
+          "header": "fr_FR",
+          "code": "FR_FR"
+        },
+        {
+          "column": 20,
+          "header": "fr_BE",
+          "code": "FR_BE"
+        },
+        {
+          "column": 21,
+          "header": "de_DE",
+          "code": "DE_DE"
+        },
+        {
+          "column": 22,
+          "header": "de_AT",
+          "code": "DE_AT"
+        },
+        {
+          "column": 23,
+          "header": "es_ES",
+          "code": "ES_ES"
+        },
+        {
+          "column": 24,
+          "header": "it_IT",
+          "code": "IT_IT"
+        }
+      ],
+      "labels": [
+        "subjectline",
+        "preheader",
+        "block1_title",
+        "block1_copy",
+        "block1_imagelink",
+        "block1_cta1",
+        "block1_cta1_link",
+        "block1_cta2",
+        "block1_cta2_link",
+        "block2_subhead",
+        "block2_category1",
+        "block2_category_link1",
+        "block2_category2",
+        "block2_category_link2",
+        "block2_category3",
+        "block2_category_link3",
+        "block2_category4",
+        "block2_category_link4",
+        "block2_cta1",
+        "block2_cta1_link",
+        "block3_subhead",
+        "block3_subhead_link",
+        "block4_subhead",
+        "block4_copy",
+        "block4_cta1",
+        "block4_cta1_link"
+      ],
+      "sourceColumn": 2
+    },
+    {
+      "sheet": "Feuil1",
+      "headerRow": 1,
+      "headers": [
+        {
+          "column": 1,
+          "header": "English",
+          "code": "EN"
+        },
+        {
+          "column": 2,
+          "header": "Context"
+        },
+        {
+          "column": 3,
+          "header": "Character Limit"
+        },
+        {
+          "column": 4,
+          "header": "IE",
+          "code": "IE"
+        },
+        {
+          "column": 5,
+          "header": "FI",
+          "code": "FI"
+        },
+        {
+          "column": 6,
+          "header": "NL",
+          "code": "NL"
+        },
+        {
+          "column": 7,
+          "header": "BE EN"
+        },
+        {
+          "column": 8,
+          "header": "French",
+          "code": "FR"
+        },
+        {
+          "column": 9,
+          "header": "BE FR",
+          "code": "BE_FR"
+        },
+        {
+          "column": 10,
+          "header": "German",
+          "code": "DE"
+        },
+        {
+          "column": 11,
+          "header": "AT"
+        },
+        {
+          "column": 12,
+          "header": "Spanish",
+          "code": "ES"
+        },
+        {
+          "column": 13,
+          "header": "Italian",
+          "code": "IT"
+        },
+        {
+          "column": 14,
+          "header": "Tags"
+        },
+        {
+          "column": 15,
+          "header": "Czech",
+          "code": "CS"
+        },
+        {
+          "column": 16,
+          "header": "Polish",
+          "code": "PL"
+        }
+      ],
+      "labels": [
+        "Subject Line Option 1 Launch Members",
+        "Subject Line Option 2 Launch Members",
+        "Subject Line Option 3 Launch Members",
+        "Pre Header Option 1 Launch Members",
+        "Pre Header Option 2 Launch Members",
+        "Subject Line Option 1 Launch",
+        "Subject Line Option 2 Launch",
+        "Pre Header Option 1 Launch",
+        "Pre Header Option 2 Launch",
+        "TOP BANNER",
+        "Top Banner (Last Chance Only)",
+        "BLOCK ONE",
+        "Headline Members",
+        "Image Link Members",
+        "Body Copy Members",
+        "CTA Member",
+        "Link Member",
+        "Headline Launch",
+        "Image Link Launch",
+        "Body Copy Launch",
+        "CTA Launch",
+        "Link Launch",
+        "Headline Last Chance members",
+        "Image Link Last Chance members",
+        "Body Copy Last Chance members",
+        "CTA Last Chance members",
+        "Link Last Chance members",
+        "Headline Last Chance nonmembers",
+        "Image Link Last Chance nonmembers",
+        "Body Copy Last Chance nonmembers",
+        "CTA Last Chance nonmembers",
+        "Link Last Chance nonmembers",
+        "BLOCK TWO Shop by category",
+        "Subhead",
+        "Product 1",
+        "Link B2.1",
+        "Product 2",
+        "Link B2.2",
+        "CTA B2",
+        "Link B2",
+        "BLOCK THREE jacket finder",
+        "Body Copy",
+        "CTA",
+        "Link B3",
+        "Disclaimer"
+      ],
+      "sourceColumn": 1
+    }
+  ]
 }

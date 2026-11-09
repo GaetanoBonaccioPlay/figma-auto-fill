@@ -10,11 +10,22 @@ export async function readSheets(path: string): Promise<SheetData[]> {
   try { await workbook.xlsx.readFile(path); }
   catch (error) { throw new Error(`Excel non leggibile (${path}): ${(error as Error).message}`); }
   return workbook.worksheets.filter(sheet => sheet.state === 'visible').map(sheet => {
+    // rowCount/columnCount includono le righe solo formattate: un foglio formattato fino in fondo dichiara 1.048.576
+    // righe. Si legge fino all'ultima riga e colonna con un valore.
+    let lastRow = 0;
+    let lastColumn = 0;
+    sheet.eachRow({ includeEmpty: false }, (row, number) => {
+      row.eachCell({ includeEmpty: false }, (cell, column) => {
+        if (cellText(cell).trim() === '') return;
+        lastRow = Math.max(lastRow, number);
+        lastColumn = Math.max(lastColumn, column);
+      });
+    });
     const rows: string[][] = [];
-    for (let r = 1; r <= sheet.rowCount; r++) {
+    for (let r = 1; r <= lastRow; r++) {
       const row = sheet.getRow(r);
       const cells: string[] = [];
-      for (let c = 1; c <= sheet.columnCount; c++) cells.push(cellText(row.getCell(c)));
+      for (let c = 1; c <= lastColumn; c++) cells.push(cellText(row.getCell(c)));
       rows.push(cells);
     }
     return { name: sheet.name, rows };

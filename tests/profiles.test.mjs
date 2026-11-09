@@ -27,16 +27,29 @@ test('validazione: basta il nome, codici lingua normalizzati, campo errato indic
   assert.throws(() => validateProfile(profile({ excelModels: [{ headerRow: 1 }] })), /excelModels\.0\.sheet/);
 });
 
-test('migrazione: i profili versione 1 attuali (Columbia, The North Face) diventano versione 2 senza perdite', async () => {
-  for (const file of ['columbia.json', 'the-north-face.json']) {
+test('migrazione: un profilo versione 1 diventa versione 2 senza perdite', () => {
+  const v1 = { version: 1, name: 'Columbia', naming: { template: '{Nome}', start: 1 }, primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE', 'ES', 'IT'], sections: 'none', glossary: [], confirmedMatches: [] };
+  const migrated = validateProfile(v1);
+  assert.equal(migrated.version, 2);
+  assert.deepEqual([migrated.name, migrated.languages, migrated.naming, migrated.sections], [v1.name, v1.languages, v1.naming, 'none']);
+  assert.deepEqual(migrated.excelModels, []);
+});
+
+test('Profili di base del repository: versione 2 con Modelli Excel dai file reali, senza testi del cliente', async () => {
+  for (const [file, sheets] of [['columbia.json', ['main', 'Feuil1']], ['the-north-face.json', ['sections']]]) {
     const raw = JSON.parse(await readFile(new URL(`../brand-profiles/${file}`, import.meta.url), 'utf8'));
-    const migrated = validateProfile(raw);
-    assert.equal(migrated.version, 2);
-    assert.equal(migrated.name, raw.name);
-    assert.deepEqual(migrated.languages, raw.languages);
-    assert.deepEqual(migrated.naming, raw.naming);
-    assert.deepEqual(migrated.excelModels, []);
+    assert.equal(raw.version, 2);
+    const profile = validateProfile(raw);
+    assert.deepEqual(profile.excelModels.map(model => model.sheet), sheets);
+    for (const model of profile.excelModels) {
+      assert.ok(model.labels.length >= 10, `${file}: etichette sufficienti per riconoscerlo`);
+      assert.ok(model.labels.every(label => label.length <= 40 && label.split(' ').length <= 6), `${file}: solo etichette brevi`);
+    }
   }
+  const [columbia, tnf] = await Promise.all(['columbia.json', 'the-north-face.json'].map(async file => validateProfile(JSON.parse(await readFile(new URL(`../brand-profiles/${file}`, import.meta.url), 'utf8')))));
+  // Columbia e The North Face hanno Modelli Excel diversi e non si confondono
+  for (const model of columbia.excelModels) assert.deepEqual(recognize(model, [columbia, tnf]).candidates.map(item => item.name), ['Columbia']);
+  for (const model of tnf.excelModels) assert.deepEqual(recognize(model, [columbia, tnf]).candidates.map(item => item.name), ['The North Face']);
 });
 
 test('profilo effettivo: le Aggiunte personali si sommano al base e prevalgono in caso di conflitto', () => {
@@ -160,15 +173,16 @@ const sheet = rows => ({ sheet: 'Copy', headerRow: 1, rows, languageColumns: [{ 
 
 test('Modello Excel: solo struttura ed Etichette ricorrenti, nessun testo del cliente né ID', () => {
   const model = extractExcelModel(sheet([
-    ['ID', 'Field', 'EN', 'FR', 'Notes'],
-    ['001', 'Subject line', 'Gear up for winter', 'Équipez-vous', 'Approved by the client marketing team on Monday morning'],
-    ['002', 'CTA', 'Shop now', 'Acheter', ''],
-    ['003', 'CTA', 'Shop', 'Acheter', '12/11/2026']
+    ['ID', 'Field', 'EN', 'FR', 'Notes', 'Dutch NLNL', 'AT'],
+    ['001', 'Subject line', 'Gear up for winter', 'Équipez-vous', 'Approved by the client marketing team on Monday morning', 'Welkom bij Columbia', 'Jetzt kaufen'],
+    ['002', 'CTA', 'Shop now', 'Acheter', 'ok', 'Shop nu', ''],
+    ['003', 'CTA', 'Shop', 'Acheter', '12/11/2026', '', '']
   ]));
-  assert.deepEqual(model.headers.map(item => [item.header, item.code ?? null]), [['ID', null], ['Field', null], ['EN', 'EN'], ['FR', 'FR'], ['Notes', null]]);
+  assert.deepEqual(model.headers.map(item => [item.header, item.code ?? null]), [['ID', null], ['Field', null], ['EN', 'EN'], ['FR', 'FR'], ['Notes', null], ['Dutch NLNL', null], ['AT', null]]);
   assert.deepEqual(model.labels, ['Subject line', 'CTA']);
   const serialized = JSON.stringify(model);
-  for (const forbidden of ['Gear up', 'Équipez', '001', 'Approved', '12/11']) assert.ok(!serialized.includes(forbidden), forbidden);
+  // anche le colonne lingua non riconosciute (Dutch NLNL, AT) e le note non devono lasciar passare testi del cliente
+  for (const forbidden of ['Gear up', 'Équipez', '001', 'Approved', '12/11', 'Welkom', 'Shop nu', 'Jetzt']) assert.ok(!serialized.includes(forbidden), forbidden);
 });
 
 test('riconoscimento: le Etichette ricorrenti pesano più delle intestazioni generiche; tre esiti', () => {
