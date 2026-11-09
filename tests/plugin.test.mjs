@@ -803,4 +803,6 @@ test('il bundle del plugin non contiene espressioni che Figma rifiuta come impor
   const match = code.match(rejected);
   assert.equal(match, null, match ? `trovato: ${code.slice(Math.max(0, match.index - 60), match.index + 40)}` : '');
   assert.equal(/(^|[^.])\beval\s*\(/.test(code), false);
+  // il sandbox rifiuta anche i commenti HTML nel codice
+  assert.equal(/<!--|-->/.test(code), false, 'commento HTML nel bundle');
 });
