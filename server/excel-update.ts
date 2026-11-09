@@ -1,4 +1,5 @@
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { rename, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
 import ExcelJS from 'exceljs';
 import { escapeMarkup, parseMarkup, resolveValue, type FrameInfo, type TranslationRow } from '../src/core';
 import { normalizeText, type ExcelRow, type LayerRef } from './match';
@@ -122,32 +123,111 @@ export function defaultOutputPath(input: string): string {
   return join(dirname(input), `${basename(input, extname(input))}_updated.xlsx`);
 }
 
+// Marcatore scritto nelle proprietà del documento delle copie che generiamo: serve a riconoscerle quando si rigenerano.
+export const GENERATED_MARKER = 'Generato da Figma Auto Fill: copia aggiornata, l\'originale non è stato modificato';
+
+export async function isGeneratedCopy(path: string): Promise<boolean> {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(path);
+    return workbook.description === GENERATED_MARKER;
+  } catch { return false; }
+}
+
+const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === 'ENOENT';
+
+// L'Excel originale non va mai toccato. Il controllo è sul file, non sul testo del percorso: `..`, link simbolici,
+// hard link e maiuscole/minuscole (il disco del Mac non le distingue) portano comunque allo stesso file.
+// Un file già esistente si sovrascrive solo se `allowOverwrite` (una copia generata da noi).
+export async function assertSafeOutput(input: string, output: string, allowOverwrite: boolean): Promise<void> {
+  const sameFile = `Il file di output non può coincidere con l'Excel originale: ${basename(input)}`;
+  if (extname(output).toLowerCase() !== '.xlsx') throw new Error(`Il file di output deve avere estensione .xlsx: ${output}`);
+  let directory: string;
+  try { directory = await realpath(dirname(output)); }
+  catch (error) { throw isMissing(error) ? new Error(`Cartella di destinazione non trovata: ${dirname(output)}`) : error; }
+  const originalPath = await realpath(input);
+  if (join(directory, basename(output)) === originalPath) throw new Error(sameFile);
+  let existing;
+  try { existing = await stat(output); }
+  catch (error) { if (isMissing(error)) return; throw error; }
+  const original = await stat(input);
+  if (existing.ino === original.ino && existing.dev === original.dev) throw new Error(sameFile);
+  if (!allowOverwrite) {
+    throw new Error(`${output} esiste già e non è una copia generata da questo strumento: scegli un altro nome`);
+  }
+}
+
 export async function writeUpdatedWorkbook(options: {
   input: string; output: string; sheet: string; plan: UpdatePlan; idColumn?: number;
-}): Promise<void> {
-  if (resolve(options.input) === resolve(options.output)) throw new Error('Il file di output non può coincidere con l\'Excel originale');
+  // Con keepRows la copia contiene solo l'intestazione (righe fino a headerRow) e queste righe: le altre vengono tolte.
+  keepRows?: number[]; headerRow?: number;
+  // true solo per una copia già generata da noi (vedi isGeneratedCopy): l'originale non si sovrascrive mai
+  allowOverwrite?: boolean;
+}): Promise<{ removedRows: number }> {
+  await assertSafeOutput(options.input, options.output, options.allowOverwrite ?? false);
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(options.input);
   const sheet = workbook.getWorksheet(options.sheet);
   if (!sheet) throw new Error(`Foglio "${options.sheet}" non trovato`);
+  // Le righe usate salgono a coprire quelle non usate, copiando cella per cella valore, stile e nota
+  // (spliceRows di ExcelJS perde le note); poi si scrive con i numeri di riga rimappati.
+  const rowMap = new Map<number, number>();
+  const originalTotal = sheet.rowCount;
+  let removedRows = 0;
+  if (options.keepRows) {
+    const header = options.headerRow ?? 1;
+    const total = sheet.rowCount;
+    const keep = [...new Set(options.keepRows)].filter(row => row > header && row <= total).sort((a, b) => a - b);
+    keep.forEach((source, index) => {
+      const target = header + 1 + index;
+      rowMap.set(source, target);
+      if (source === target) return;
+      const from = sheet.getRow(source);
+      const to = sheet.getRow(target);
+      for (let column = 1; column <= sheet.columnCount; column++) {
+        const cell = from.getCell(column);
+        const copy = to.getCell(column);
+        copy.value = cell.value;
+        copy.style = JSON.parse(JSON.stringify(cell.style));
+        copy.note = (cell.note ?? undefined) as ExcelJS.Cell['note'];
+      }
+      to.height = from.height;
+    });
+    for (let row = total; row > header + keep.length; row--) sheet.spliceRows(row, 1);
+    removedRows = total - header - keep.length;
+  }
+  // righe usate: nuova posizione; righe aggiunte in coda (oltre l'ultima originale): scalano delle righe tolte
+  const mapRow = (row: number): number => rowMap.get(row) ?? (row > originalTotal ? row - removedRows : row);
   const mark = (cell: ExcelJS.Cell, kind: string, note: string): void => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: FILL[kind] } };
     cell.note = note;
   };
   for (const write of options.plan.writes) {
-    const cell = sheet.getCell(write.row, write.column);
+    const cell = sheet.getCell(mapRow(write.row), write.column);
     cell.value = write.text;
     mark(cell, write.kind, write.kind === 'ai'
       ? 'Traduzione AI: da revisionare'
       : `Da Figma (${write.source.replace(/^figma:/, '')})${write.previous ? `. Prima: ${write.previous}` : ''}`);
   }
   for (const added of options.plan.newRows) {
-    if (options.idColumn) sheet.getCell(added.row, options.idColumn).value = added.id;
+    const row = mapRow(added.row);
+    if (options.idColumn) sheet.getCell(row, options.idColumn).value = added.id;
     for (const item of added.cells) {
-      const cell = sheet.getCell(added.row, item.column);
+      const cell = sheet.getCell(row, item.column);
       cell.value = item.text;
       mark(cell, 'orphan', `Riga aggiunta da Figma (${added.id}): non presente nell'Excel cliente`);
     }
   }
-  await workbook.xlsx.writeFile(options.output);
+  workbook.description = GENERATED_MARKER;
+  // Scrittura atomica: file temporaneo accanto alla destinazione e poi rename, così un errore a metà
+  // non lascia una copia corrotta e l'originale non viene mai aperto in scrittura.
+  const temporary = `${options.output}.tmp-${process.pid}`;
+  try {
+    await workbook.xlsx.writeFile(temporary);
+    await rename(temporary, options.output);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return { removedRows };
 }

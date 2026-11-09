@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { existsSync, linkSync, symlinkSync } from 'node:fs';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { cellToMarkup, defaultOutputPath, markupToCell, planUpdates, writeUpdatedWorkbook } from '../dist/server/excel-update.mjs';
+import { assertSafeOutput, cellToMarkup, defaultOutputPath, isGeneratedCopy, markupToCell, planUpdates, writeUpdatedWorkbook } from '../dist/server/excel-update.mjs';
+import ExcelJS from 'exceljs';
 import { readCells, tempDir, writeFixture } from './helpers/xlsx.mjs';
 
 const hash = async path => createHash('sha256').update(await readFile(path)).digest('hex');
@@ -103,5 +105,107 @@ test('rifiuta di scrivere sopra l\'originale', async () => {
   try {
     const input = await writeFixture(join(dir, 'c.xlsx'), [{ name: 'S', rows: [['a']] }]);
     await assert.rejects(writeUpdatedWorkbook({ input, output: input, sheet: 'S', plan: { writes: [], conflicts: [], newRows: [] } }), /non può coincidere/);
+  } finally { await cleanup(); }
+});
+
+test('solo le righe usate: le altre vengono tolte dalla copia, intestazione e note conservate', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const input = await writeFixture(join(dir, 'cliente.xlsx'), [
+      { name: 'Campagna', rows: [
+        ['ID', 'Italiano', 'English', 'Deutsch'],
+        ['H1', 'Scopri la nuova collezione', 'Discover the new collection', ''],
+        ['X1', 'Riga non usata', 'Unused row', ''],
+        ['C1', 'Acquista ora', 'Shop now', ''],
+        ['X2', 'Altra riga non usata', 'Another unused row', '']
+      ] },
+      { name: 'Altro', rows: [['a'], ['b'], ['c']] }
+    ]);
+    const clientNotes = new ExcelJS.Workbook();
+    await clientNotes.xlsx.readFile(input);
+    clientNotes.getWorksheet('Campagna').getCell(4, 2).note = 'Nota del cliente: non cambiare';
+    await clientNotes.xlsx.writeFile(input);
+    const before = await hash(input);
+    const edited = { ...unchanged, cta: { ...unchanged.cta, DE: 'Jetzt kaufen' } };
+    const plan = planUpdates({ ...base, rows: [...rows.slice(0, 1), { ...rows[1], row: 4 }], lastRow: 5, figma: figma(edited),
+      matches: [{ layer: layer('headline', 'Scopri la nuova collezione'), row: 2 }, { layer: layer('cta', 'Acquista ora'), row: 4 }], orphans: [] });
+    const output = join(dir, 'cliente_updated.xlsx');
+    const result = await writeUpdatedWorkbook({ input, output, sheet: 'Campagna', plan, idColumn: 1, keepRows: [2, 4], headerRow: 1 });
+    assert.deepEqual(result, { removedRows: 2 });
+    assert.equal(await hash(input), before);
+
+    const { workbook, sheet, text } = await readCells(output, 'Campagna');
+    assert.equal(sheet.rowCount, 3, 'intestazione + 2 righe usate');
+    assert.deepEqual([1, 2, 3].map(row => text(row, 1)), ['ID', 'H1', 'C1']);
+    assert.equal(text(3, 4), 'Jetzt kaufen', 'la scrittura segue la riga anche dopo la rinumerazione');
+    assert.match(String(sheet.getCell(3, 4).note?.texts?.map(item => item.text).join('') ?? sheet.getCell(3, 4).note), /Hero_IT/);
+    assert.equal(workbook.getWorksheet('Altro').rowCount, 3, 'gli altri fogli non si toccano');
+    const noteText = cell => String(cell.note?.texts?.map(item => item.text).join('') ?? cell.note);
+    assert.match(noteText(sheet.getCell(3, 2)), /Nota del cliente/, 'le note del cliente seguono la loro riga');
+
+    const full = await writeUpdatedWorkbook({ input, output: join(dir, 'completo.xlsx'), sheet: 'Campagna', plan });
+    assert.deepEqual(full, { removedRows: 0 });
+    assert.equal((await readCells(join(dir, 'completo.xlsx'), 'Campagna')).sheet.rowCount, 5);
+  } finally { await cleanup(); }
+});
+
+const emptyPlan = { writes: [], conflicts: [], newRows: [] };
+const fingerprint = async path => { const info = await stat(path); return `${await hash(path)}|${info.size}|${info.mtimeMs}|${info.ino}`; };
+
+test('l\'originale non si sovrascrive mai, comunque si scriva il percorso di output', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const input = await writeFixture(join(dir, 'cliente.xlsx'), [{ name: 'S', rows: [['ID', 'Italiano'], ['a', 'uno']] }]);
+    const other = await writeFixture(join(dir, 'altro.xlsx'), [{ name: 'S', rows: [['x']] }]);
+    await mkdir(join(dir, 'sub'));
+    symlinkSync(input, join(dir, 'link.xlsx'));
+    linkSync(input, join(dir, 'hard.xlsx'));
+    const caseVariant = join(dir, 'CLIENTE.xlsx');
+    const sameFile = /non può coincidere con l'Excel originale/;
+    const hostile = [
+      [input, sameFile],
+      [`${dir}/sub/../cliente.xlsx`, sameFile],
+      [join(dir, 'link.xlsx'), sameFile],
+      [join(dir, 'hard.xlsx'), sameFile],
+      [join(dir, 'altro.xlsx'), /esiste già e non è una copia generata/],
+      [join(dir, 'copia.xls'), /estensione \.xlsx/],
+      [join(dir, 'manca', 'copia.xlsx'), /Cartella di destinazione non trovata/]
+    ];
+    if (existsSync(caseVariant)) hostile.push([caseVariant, sameFile]); // disco senza distinzione maiuscole/minuscole
+    const before = [await fingerprint(input), await fingerprint(other)];
+    for (const [output, message] of hostile) {
+      await assert.rejects(assertSafeOutput(input, output, false), message, output);
+      await assert.rejects(writeUpdatedWorkbook({ input, output, sheet: 'S', plan: emptyPlan }), message, output);
+      // anche con il permesso di sovrascrivere, l'originale (in qualsiasi forma) non si scrive mai
+      if (message === sameFile) {
+        await assert.rejects(writeUpdatedWorkbook({ input, output, sheet: 'S', plan: emptyPlan, allowOverwrite: true }), message, `allowOverwrite: ${output}`);
+      }
+    }
+    assert.deepEqual([await fingerprint(input), await fingerprint(other)], before, 'originale e altro file identici (contenuto, dimensione, data, inode)');
+    // le copie con nome nuovo sono ammesse e non lasciano file temporanei
+    const copy = join(dir, 'nuova.xlsx');
+    await assertSafeOutput(input, copy, false);
+    await writeUpdatedWorkbook({ input, output: copy, sheet: 'S', plan: emptyPlan });
+    assert.equal(await isGeneratedCopy(copy), true);
+    assert.equal(await isGeneratedCopy(input), false, 'l\'originale non ha il marcatore');
+    assert.equal((await readdir(dir)).some(name => name.includes('.tmp-')), false, 'nessun file temporaneo');
+    assert.equal(await fingerprint(input), before[0]);
+  } finally { await cleanup(); }
+});
+
+test('una copia generata si può rigenerare, un file qualunque con lo stesso nome no', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const input = await writeFixture(join(dir, 'cliente.xlsx'), [{ name: 'S', rows: [['ID', 'Italiano'], ['a', 'uno']] }]);
+    const copy = join(dir, 'cliente_updated.xlsx');
+    await writeUpdatedWorkbook({ input, output: copy, sheet: 'S', plan: emptyPlan });
+    // stessa copia: il marcatore la rende rigenerabile anche da una sessione nuova
+    await writeUpdatedWorkbook({ input, output: copy, sheet: 'S', plan: emptyPlan, allowOverwrite: await isGeneratedCopy(copy) });
+    // un file del cliente che per caso si chiama *_updated.xlsx non ha il marcatore
+    const theirs = await writeFixture(join(dir, 'loro_updated.xlsx'), [{ name: 'S', rows: [['x']] }]);
+    const before = await fingerprint(theirs);
+    assert.equal(await isGeneratedCopy(theirs), false);
+    await assert.rejects(writeUpdatedWorkbook({ input, output: theirs, sheet: 'S', plan: emptyPlan, allowOverwrite: await isGeneratedCopy(theirs) }), /esiste già/);
+    assert.equal(await fingerprint(theirs), before);
   } finally { await cleanup(); }
 });

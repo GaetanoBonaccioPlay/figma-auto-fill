@@ -9,7 +9,7 @@ Il cliente o marchio per cui si producono le varianti; determina il Profilo bran
 _Avoid_: cliente, marchio, account
 
 **Profilo brand**:
-L'insieme di impostazioni ricorrenti di un Brand: modello del nome di output, lingua principale, lingue e paesi abituali, organizzazione in section, glossario opzionale e abbinamenti confermati. Si esporta e importa come file per condividerlo tra colleghi.
+L'insieme di impostazioni ricorrenti di un Brand: modello del nome di output, lingua principale, lingue e paesi abituali, organizzazione in section, glossario opzionale, Livelli esclusi e abbinamenti confermati. Si esporta e importa come file per condividerlo tra colleghi.
 _Avoid_: preset, template, configurazione brand
 
 **Glossario brand**:
@@ -29,15 +29,19 @@ La colonna dell'Excel cliente scritta nella lingua principale del Profilo brand,
 _Avoid_: colonna master, colonna base
 
 **Livello orfano**:
-Un livello di testo da tradurre che non ha alcuna riga abbinata nell'Excel cliente.
+Un livello di testo da tradurre che non ha alcuna riga abbinata nell'Excel cliente. Non entra nell'Excel aggiornato, salvo richiesta esplicita.
 _Avoid_: testo mancante, unmatched
+
+**Livello escluso**:
+Un livello di contorno (per esempio `To:`, `Reply to:`, data, logo) che non va mai tradotto; l'elenco è nel Profilo brand e vale per tutte le campagne di quel Brand. Non conta come Livello orfano.
+_Avoid_: livello ignorato, livello da saltare
 
 **Cella multi-livello**:
 Una cella dell'Excel cliente che contiene il testo di più livelli insieme (per esempio headline e subhead); non viene abbinata automaticamente ma segnalata al designer.
 _Avoid_: cella composta, cella multipla
 
 **Excel aggiornato**:
-Copia dell'Excel cliente (`<nome>_updated.xlsx`) in cui vengono riportati i testi effettivamente usati in Figma, con le celle modificate evidenziate e annotate con la loro fonte.
+Copia dell'Excel cliente (`<nome>_updated.xlsx`) che contiene solo le righe usate dai frame, con i testi effettivamente usati in Figma e le celle modificate evidenziate e annotate con la loro fonte.
 _Avoid_: Excel finale, export Excel
 
 **Traduzione AI**:
