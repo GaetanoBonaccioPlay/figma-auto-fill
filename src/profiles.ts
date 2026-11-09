@@ -417,7 +417,8 @@ export class Archive {
     };
   }
 
-  import(raw: unknown, options: ImportOptions = {}): ImportResult {
+  // Non chiamarlo come la parola chiave degli import: il controllo di sicurezza di Figma rifiuta il bundle (vedi tests/plugin.test.mjs).
+  importFile(raw: unknown, options: ImportOptions = {}): ImportResult {
     const incoming = readExportFile(raw);
     const profile = options.rename ? { ...incoming, name: options.rename.trim() } : incoming;
     const base = this.base(profile.name);
@@ -658,7 +659,7 @@ export function runProfileAction(archive: Archive, input: ProfileAction): { data
     case 'clear-additions': archive.clearAdditions(input.name); return { data: { profile: archive.get(input.name) }, changed: true };
     case 'export': return { data: archive.exportFile(input.name), changed: false };
     case 'import': {
-      const result = archive.import(input.file, { mode: input.mode, rename: input.rename });
+      const result = archive.importFile(input.file, { mode: input.mode, rename: input.rename });
       return { data: result, changed: result.status === 'imported' };
     }
     default: throw new Error(`Azione sui profili sconosciuta: ${String((input as { action?: unknown }).action)}`);

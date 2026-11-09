@@ -141,21 +141,21 @@ test('export/import: file completo con origine, novità come aggiunte, scelte su
 
   // collega senza il Profilo di base: diventa personale con lo stesso profilo effettivo
   const stranger = new Archive([]);
-  const asPersonal = stranger.import(file);
+  const asPersonal = stranger.importFile(file);
   assert.deepEqual([asPersonal.status, asPersonal.as], ['imported', 'personal']);
   assert.deepEqual(stranger.get('Columbia').languages, sender.get('Columbia').languages);
   assert.equal(stranger.get('Columbia').revision, undefined);
-  assert.equal(stranger.import(file).status, 'choose');
-  assert.deepEqual(stranger.import(file, { rename: 'Columbia copia' }).name, 'Columbia copia');
+  assert.equal(stranger.importFile(file).status, 'choose');
+  assert.deepEqual(stranger.importFile(file, { rename: 'Columbia copia' }).name, 'Columbia copia');
 
   // collega con il base e aggiunte proprie: unisci o sostituisci
   const colleague = new Archive([columbia]);
   colleague.update('Columbia', current => ({ ...current, ignoredLayers: ['To:'] }));
-  const ask = colleague.import(file);
+  const ask = colleague.importFile(file);
   assert.deepEqual([ask.status, ask.choices], ['choose', ['merge', 'replace']]);
-  colleague.import(file, { mode: 'merge' });
+  colleague.importFile(file, { mode: 'merge' });
   assert.deepEqual([colleague.get('Columbia').languages.includes('PT_BR'), colleague.get('Columbia').ignoredLayers], [true, ['To:']]);
-  colleague.import(file, { mode: 'replace' });
+  colleague.importFile(file, { mode: 'replace' });
   assert.deepEqual(colleague.get('Columbia').ignoredLayers, []);
 
   assert.throws(() => readExportFile({ format: 'altro' }), /non è un profilo brand esportato/);

@@ -796,3 +796,11 @@ test('un Profilo di base non più distribuito diventa un Profilo personale e la 
   await figma.ui.onmessage({ kind: 'ready' });
   assert.deepEqual(Array.from(messages.filter(message => message.kind === 'profiles-state').at(-1).notices), []);
 });
+
+test('il bundle del plugin non contiene espressioni che Figma rifiuta come import dinamici', () => {
+  // stesso controllo del sandbox di Figma (SES): "possible import expression rejected"
+  const rejected = /(^|[^.])\bimport(\s*(?:\(|\/[/*]))/m;
+  const match = code.match(rejected);
+  assert.equal(match, null, match ? `trovato: ${code.slice(Math.max(0, match.index - 60), match.index + 40)}` : '');
+  assert.equal(/(^|[^.])\beval\s*\(/.test(code), false);
+});

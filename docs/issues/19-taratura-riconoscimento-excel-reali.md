@@ -54,3 +54,7 @@ Resta da fare a mano con il designer: la stessa sessione in Figma Desktop con Cl
 - 18 Proposte di salvataggio a fine sessione
 
 User stories: 10–17, 23
+
+## Collaudo manuale in Figma Desktop
+
+- 2026-11-09, apertura del plugin: Figma rifiutava il codice con `SyntaxError: possible import expression rejected around line 1`. Causa: il metodo dell'archivio chiamato come la parola chiave degli import, che nel bundle somiglia a un import dinamico. Corretto (`importFile`) e aggiunto un test che controlla il bundle con lo stesso schema del sandbox di Figma.
