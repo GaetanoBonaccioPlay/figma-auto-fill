@@ -13,7 +13,7 @@ Plugin per Figma Design che crea le varianti linguistiche di uno o più frame a 
 
 ### Per i designer (senza Node.js)
 
-Non serve installare Node.js né usare il terminale. Dalla pagina **Releases** del repository si scaricano due file; il secondo serve solo per la [modalità agente](#modalità-agente-mcp).
+Non serve installare Node.js né usare il terminale. Dalla pagina **[Releases](https://github.com/GaetanoBonaccioPlay/figma-auto-fill/releases/latest)** del repository (sempre l'ultima versione; le precedenti sono nell'[elenco completo](https://github.com/GaetanoBonaccioPlay/figma-auto-fill/releases)) si scaricano due file, nella sezione **Assets** in fondo alla release; il secondo serve solo per la [modalità agente](#modalità-agente-mcp).
 
 | File | A cosa serve |
 | --- | --- |
