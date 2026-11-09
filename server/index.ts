@@ -9,18 +9,26 @@ import { createMcpServer } from './tools';
 // Su stdio stdout è riservato al protocollo MCP: i log vanno su stderr.
 const log = (message: string): void => { process.stderr.write(`[figma-auto-fill] ${message}\n`); };
 
-const port = Number(process.env.FIGMA_AUTOFILL_PORT ?? BRIDGE_PORT);
-const brandsDir = resolve(process.env.FIGMA_AUTOFILL_BRANDS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'brand-profiles'));
+async function main(): Promise<void> {
+  const port = Number(process.env.FIGMA_AUTOFILL_PORT ?? BRIDGE_PORT);
+  // Nel pacchetto .mcpb la cartella arriva da FIGMA_AUTOFILL_BRANDS_DIR; il ripiego serve per l'uso da sorgente.
+  const brandsDir = resolve(process.env.FIGMA_AUTOFILL_BRANDS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'brand-profiles'));
 
-const bridge = new Bridge({ port });
-await bridge.start();
-log(bridge.startError ?? `bridge in ascolto su ws://localhost:${port}`);
-log(`profili brand in ${brandsDir}`);
+  const bridge = new Bridge({ port });
+  await bridge.start();
+  log(bridge.startError ?? `bridge in ascolto su ws://localhost:${port}`);
+  log(`profili brand in ${brandsDir}`);
 
-const server = createMcpServer({ bridge, brands: new BrandStore(brandsDir) });
-await server.connect(new StdioServerTransport());
+  const server = createMcpServer({ bridge, brands: new BrandStore(brandsDir) });
+  await server.connect(new StdioServerTransport());
 
-const shutdown = (): void => { void bridge.close().finally(() => process.exit(0)); };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-process.stdin.on('close', shutdown);
+  const shutdown = (): void => { void bridge.close().finally(() => process.exit(0)); };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  process.stdin.on('close', shutdown);
+}
+
+main().catch(error => {
+  log(`avvio fallito: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});

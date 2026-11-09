@@ -1,0 +1,29 @@
+name: release
+
+# Si avvia con un tag che coincide con la versione di package.json (per esempio v1.0.0)
+# e pubblica i file da consegnare ai designer: plugin (.zip) e server per Claude Desktop (.mcpb).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Il tag deve coincidere con la versione di package.json
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package
+      - name: Pubblica la release
+        run: gh release create "$GITHUB_REF_NAME" release/*.zip release/*.mcpb --generate-notes --title "Figma Auto Fill $GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

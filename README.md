@@ -6,7 +6,7 @@ Plugin per Figma Design che crea le varianti linguistiche di uno o più frame a 
 
 *Tutti gli screenshot mostrano l'interfaccia del plugin con dati dimostrativi di una campagna fittizia.*
 
-**[Funzionalità](#funzionalità)** · **[Avvio](#avvio)** · **[Come si usa](#come-si-usa)** · **[Modalità agente (MCP)](#modalità-agente-mcp)** · **[Formattazione e limiti](#formattazione-e-limiti)** · **[Sviluppo](#sviluppo)**
+**[Funzionalità](#funzionalità)** · **[Installazione per i designer](#installazione-per-i-designer-senza-nodejs)** · **[Avvio da sorgente](#avvio-da-sorgente-sviluppo)** · **[Come si usa](#come-si-usa)** · **[Modalità agente (MCP)](#modalità-agente-mcp)** · **[Formattazione e limiti](#formattazione-e-limiti)** · **[Sviluppo](#sviluppo)**
 
 Interfaccia e logica sono scritte in TypeScript vanilla. Nell'uso manuale l'Excel viene letto dentro il plugin e i contenuti non vengono inviati in rete. La [modalità agente](#modalità-agente-mcp) è facoltativa: collega il plugin a un server MCP che gira sul tuo computer, raggiungibile solo da `localhost` (`devAllowedDomains` nel manifest).
 
@@ -98,7 +98,32 @@ Il frame della lingua principale in `EXPORT` è marcato come **MASTER**. Per rie
 - Se attivi le section su un export precedente, il MASTER viene spostato nella section appropriata.
 - Quando il modello selezionato è un MASTER, i testi della lingua principale nell'anteprima sono di sola lettura.
 
-## Avvio
+## Installazione per i designer (senza Node.js)
+
+Non serve installare Node.js né usare il terminale. Dalla pagina **Releases** del repository si scaricano due file; il secondo serve solo per la [modalità agente](#modalità-agente-mcp).
+
+| File | A cosa serve |
+| --- | --- |
+| `figma-auto-fill-plugin-vX.Y.Z.zip` | Il plugin per Figma Desktop |
+| `figma-auto-fill-vX.Y.Z.mcpb` | Il server per Claude Desktop (macOS), con tutto incorporato |
+
+**Plugin**
+
+1. Scompatta lo zip in una cartella che non sposterai (per esempio in Documenti): Figma la rilegge a ogni apertura.
+2. In Figma Desktop: **Plugins → Development → Import plugin from manifest…** e scegli `manifest.json` della cartella.
+3. Avvia **Figma Auto Fill** da **Plugins → Development**.
+
+**Modalità agente con Claude Desktop** (facoltativa)
+
+1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
+2. Scegli, se vuoi, la cartella dei Profili brand (di default `Documenti/Figma Auto Fill/Profili brand`): puoi metterla in una cartella condivisa con i colleghi.
+3. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
+
+**Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`.
+
+**Pubblicare una release (per chi mantiene il repo):** aggiorna `version` in `package.json`, poi crea e invia il tag corrispondente, per esempio `git tag v1.0.1 && git push origin v1.0.1`. La Action in `.github/workflows/release.yml` esegue i controlli, compila i due file e li pubblica. In locale `npm run package` li genera nella cartella `release/`.
+
+## Avvio da sorgente (sviluppo)
 
 1. Installa Node.js 20 o successivo e apri Figma Desktop.
 2. In questa cartella esegui `npm install` e `npm run build`.
@@ -125,6 +150,8 @@ Prima di iniziare, dai nomi univoci ai livelli di testo da tradurre, per esempio
 Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: chiede il Brand, analizza l'Excel e fa confermare le lingue, abbina i testi dei frame alle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
 
 ### Configurazione
+
+Con Claude Desktop basta il file `.mcpb` descritto in [Installazione per i designer](#installazione-per-i-designer-senza-nodejs). I passi seguenti servono per lavorare da sorgente, per esempio con Claude Code.
 
 1. Esegui `npm install` e `npm run build`.
 2. Registra il server nel client MCP, per esempio con Claude Code:
@@ -189,4 +216,5 @@ Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto
 | `server/index.ts`, `server/tools.ts` | Server MCP: strumenti, prompt `localizza-frame` e sessione |
 | `server/bridge.ts` | WebSocket su localhost verso il plugin |
 | `server/brands.ts` | Profili brand: archivio, esportazione, importazione |
+| `scripts/package.mjs`, `mcpb/manifest.json` | Zip del plugin e pacchetto `.mcpb` da consegnare ai designer |
 | `server/excel-analyze.ts`, `server/match.ts`, `server/excel-update.ts` | Analisi dell'Excel cliente, abbinamento, Excel aggiornato |
