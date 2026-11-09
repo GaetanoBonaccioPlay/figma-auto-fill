@@ -7,6 +7,8 @@ import { readWorkbook, writeWorkbook } from './workbook';
 import { fromTsv, toTsv, gridRange, pasteGrid, type GridPoint } from './grid';
 import { richClipboardCells, richClipboardText } from './rich-text';
 import { startAgentBridge } from './agent-bridge';
+import { ProfilesController, prefillFrom, type ImportChoice, type Prefill } from './profiles-ui';
+import type { ImportResult, ProfilesState, SectionMode } from './profiles';
 
 type SelectionMessage = { kind: 'selection'; frames: FrameInfo[] };
 type LocalsSourceMessage = { kind: 'locals-source'; frames: FrameInfo[] };
@@ -995,6 +997,163 @@ element('confirm-version').addEventListener('click', () => {
   send(request);
 });
 
+// ---------- Profilo brand ----------
+
+function setSectionMode(mode: SectionMode): void {
+  element<HTMLInputElement>('create-sections').checked = mode !== 'none';
+  element('section-mode-options').hidden = mode === 'none';
+  if (mode !== 'none') {
+    const choice = document.querySelector<HTMLInputElement>(`input[name="section-mode"][value="${mode}"]`);
+    if (choice) choice.checked = true;
+  }
+}
+
+// Selezionare un profilo precompila le impostazioni; restano modificabili. Il MASTER selezionato decide la lingua principale.
+function applyPrefill(prefill: Prefill): void {
+  if (prefill.nameTemplate !== undefined) {
+    state.nameTemplate = prefill.nameTemplate;
+    element<HTMLInputElement>('name-template').value = prefill.nameTemplate;
+  }
+  if (prefill.numberStart !== undefined) {
+    state.numberStart = prefill.numberStart;
+    element<HTMLInputElement>('number-start').value = String(prefill.numberStart);
+  }
+  const master = state.frames.find(frame => frame.managedRole === 'master');
+  if (prefill.primary && !master) state.primary = prefill.primary;
+  if (prefill.targets) state.targets = new Set(prefill.targets);
+  if (prefill.sectionMode) setSectionMode(prefill.sectionMode);
+  ensureLanguages([...state.targets, state.primary]);
+  saveLanguageSettings();
+  renderNamePreviews();
+  renderLanguages();
+  renderPreview();
+  renderValidation();
+}
+
+function profileError(error: unknown): void {
+  const box = element('profile-error');
+  box.textContent = error instanceof Error ? error.message : String(error);
+  box.hidden = false;
+}
+
+function renderProfiles(current: ProfilesState): void {
+  const select = element<HTMLSelectElement>('profile-select');
+  select.replaceChildren(option('', 'Nessun profilo'));
+  for (const [origin, label] of [['base', 'Profili di base'], ['personal', 'Profili personali']] as const) {
+    const items = current.profiles.filter(item => item.origin === origin);
+    if (!items.length) continue;
+    const group = document.createElement('optgroup');
+    group.label = label;
+    for (const item of items) group.append(option(item.name, item.hasAdditions ? `${item.name} · con le tue aggiunte` : item.name));
+    select.append(group);
+  }
+  select.value = current.selected ?? '';
+  const origin = profiles.origin(current.selected);
+  element<HTMLButtonElement>('profile-export').disabled = !current.selected;
+  element<HTMLButtonElement>('profile-rename').disabled = origin !== 'personal';
+  element<HTMLButtonElement>('profile-delete').disabled = origin !== 'personal';
+  element('profile-clear-additions').hidden = !profiles.hasAdditions(current.selected);
+  const status = current.selected
+    ? `${current.selected}: ${origin === 'base' ? 'profilo di base' : 'profilo personale'}${profiles.hasAdditions(current.selected) ? ' con le tue aggiunte' : ''}.`
+    : 'Nessun profilo: le impostazioni sono quelle compilate qui sotto.';
+  element('profile-status').textContent = [status, ...current.notices].join(' ');
+}
+
+const profiles = new ProfilesController({
+  send: message => send(message),
+  onState: (current, applied) => {
+    renderProfiles(current);
+    if (applied?.profile) applyPrefill(prefillFrom(applied.profile));
+  }
+});
+
+async function profileTask(task: () => Promise<unknown>): Promise<void> {
+  element('profile-error').hidden = true;
+  try { await task(); }
+  catch (error) { profileError(error); }
+}
+
+function askImportChoice(result: Extract<ImportResult, { status: 'choose' }>): Promise<ImportChoice> {
+  const dialog = element<HTMLDialogElement>('profile-import-dialog');
+  element('profile-import-message').textContent = result.message.replace(/ \((merge|replace|rename)\)/g, '');
+  const canRename = result.choices.includes('rename');
+  element('profile-import-rename-wrap').hidden = !canRename;
+  element('profile-import-rename-button').hidden = !canRename;
+  element('profile-import-merge').hidden = !result.choices.includes('merge');
+  const renameInput = element<HTMLInputElement>('profile-import-rename');
+  renameInput.value = canRename ? `${result.name} (importato)` : '';
+  return new Promise(resolve => {
+    const done = (choice: ImportChoice) => { cleanup(); dialog.close(); resolve(choice); };
+    const handlers: Array<[string, () => void]> = [
+      ['profile-import-cancel', () => done(null)],
+      ['profile-import-merge', () => done({ mode: 'merge' })],
+      ['profile-import-replace', () => done({ mode: 'replace' })],
+      ['profile-import-rename-button', () => done(renameInput.value.trim() ? { rename: renameInput.value.trim() } : null)]
+    ];
+    const onClose = () => { cleanup(); resolve(null); };
+    const cleanup = () => {
+      for (const [id, fn] of handlers) element(id).removeEventListener('click', fn);
+      dialog.removeEventListener('close', onClose);
+    };
+    for (const [id, fn] of handlers) element(id).addEventListener('click', fn);
+    dialog.addEventListener('close', onClose);
+    dialog.showModal();
+  });
+}
+
+element<HTMLSelectElement>('profile-select').addEventListener('change', event => {
+  const name = (event.target as HTMLSelectElement).value || null;
+  void profileTask(() => profiles.select(name));
+});
+element('profile-create').addEventListener('click', () => {
+  const input = element<HTMLInputElement>('profile-name');
+  void profileTask(async () => { await profiles.create(input.value); input.value = ''; });
+});
+element('profile-rename').addEventListener('click', () => {
+  const input = element<HTMLInputElement>('profile-name');
+  const current = profiles.state.selected;
+  if (!current) return;
+  void profileTask(async () => { await profiles.rename(current, input.value); input.value = ''; });
+});
+element('profile-delete').addEventListener('click', () => {
+  const current = profiles.state.selected;
+  if (current) void profileTask(() => profiles.remove(current));
+});
+element('profile-clear-additions').addEventListener('click', () => {
+  const current = profiles.state.selected;
+  if (current) void profileTask(async () => { await profiles.clearAdditions(current); await profiles.select(current); });
+});
+element('profile-export').addEventListener('click', () => {
+  const current = profiles.state.selected;
+  if (!current) return;
+  void profileTask(async () => {
+    const { filename, content } = await profiles.exportProfile(current);
+    const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    element('profile-status').textContent = `Esportato ${filename}.`;
+  });
+});
+element<HTMLInputElement>('profile-import').addEventListener('change', event => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  void profileTask(async () => {
+    const result = await profiles.importText(await file.text(), askImportChoice);
+    if (result?.status === 'imported') {
+      element('profile-status').textContent = result.as === 'additions'
+        ? `Importato in ${result.name}: ${result.changes} novità salvate come tue aggiunte.`
+        : `Importato il profilo personale ${result.name}.`;
+    }
+  });
+});
+
 function acceptSelection(frames: FrameInfo[]): void {
   state.frames = frames;
   state.rows = orderRowsByFrames(state.rows, state.frames.map(frameLabel));
@@ -1024,6 +1183,7 @@ function acceptSelection(frames: FrameInfo[]): void {
 onmessage = (event: MessageEvent<{ pluginMessage: PluginMessage }>) => {
   const message = event.data.pluginMessage;
   if (!message) return;
+  if (profiles.handle(message)) return;
   if (message.kind === 'language-settings') {
     const settings = readLanguageSettings(message.settings);
     const master = state.frames.find(frame => frame.managedRole === 'master');

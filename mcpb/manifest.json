@@ -10,17 +10,7 @@
     "entry_point": "server/index.cjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.cjs"],
-      "env": { "FIGMA_AUTOFILL_BRANDS_DIR": "${user_config.brands_dir}" }
-    }
-  },
-  "user_config": {
-    "brands_dir": {
-      "type": "directory",
-      "title": "Cartella dei Profili brand",
-      "description": "Dove salvare e leggere i Profili brand (un file per Brand). Puoi condividerla con i colleghi.",
-      "required": false,
-      "default": "${DOCUMENTS}/Figma Auto Fill/Profili brand"
+      "args": ["${__dirname}/server/index.cjs"]
     }
   },
   "compatibility": {

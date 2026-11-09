@@ -20,6 +20,31 @@
 
   <main>
     <details class="card collapsible" open>
+      <summary><h2>Profilo brand</h2></summary>
+      <div class="section-body">
+      <p class="hint">Facoltativo: un profilo suggerisce nome di output, lingue e section, che restano modificabili. I profili di base sono curati e distribuiti con il plugin; quelli personali sono tuoi.</p>
+      <div class="row">
+        <label class="grow">Profilo
+          <select id="profile-select" aria-describedby="profile-status"><option value="">Nessun profilo</option></select>
+        </label>
+        <button id="profile-export" class="secondary" type="button" disabled>Esporta</button>
+        <label class="file-button secondary">Importa<input id="profile-import" type="file" accept=".json,application/json"></label>
+      </div>
+      <div class="row">
+        <label class="grow">Nome
+          <input id="profile-name" placeholder="Nuovo profilo" autocomplete="off" spellcheck="false" maxlength="80">
+        </label>
+        <button id="profile-create" class="secondary" type="button">Crea profilo</button>
+        <button id="profile-rename" class="secondary" type="button" disabled>Rinomina</button>
+        <button id="profile-delete" class="secondary" type="button" disabled>Elimina</button>
+        <button id="profile-clear-additions" class="text-button" type="button" hidden>Cancella le mie aggiunte</button>
+      </div>
+      <p id="profile-status" class="hint" role="status" aria-live="polite"></p>
+      <p id="profile-error" class="error" role="alert" hidden></p>
+      </div>
+    </details>
+
+    <details class="card collapsible" open>
       <summary><h2>1. Frame e lingue</h2></summary>
       <div class="section-body">
       <p class="hint">Seleziona frame o section in Figma: una section include tutti i frame al suo interno. Rinomina manualmente i livelli di testo con chiavi stabili.</p>
@@ -112,6 +137,17 @@
       <button id="cancel-replace" class="secondary" type="button">Annulla</button>
       <button id="confirm-version" class="secondary" type="button">Crea nuova versione</button>
       <button id="confirm-replace" type="button">Sostituisci export</button>
+    </div>
+  </dialog>
+  <dialog id="profile-import-dialog" aria-labelledby="profile-import-title">
+    <h2 id="profile-import-title">Profilo già presente</h2>
+    <p id="profile-import-message"></p>
+    <label id="profile-import-rename-wrap" hidden>Nuovo nome<input id="profile-import-rename" autocomplete="off" spellcheck="false"></label>
+    <div class="row actions">
+      <button id="profile-import-cancel" class="secondary" type="button">Annulla</button>
+      <button id="profile-import-merge" class="secondary" type="button" hidden>Unisci alle mie aggiunte</button>
+      <button id="profile-import-rename-button" class="secondary" type="button" hidden>Importa con questo nome</button>
+      <button id="profile-import-replace" type="button">Sostituisci</button>
     </div>
   </dialog>
   <script>/* INLINE_JS */</script>

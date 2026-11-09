@@ -4,7 +4,7 @@
 export const BRIDGE_PORT = 3055;
 export const BRIDGE_URL = `ws://localhost:${BRIDGE_PORT}`;
 
-export type AgentCommandName = 'snapshot' | 'plan' | 'generate' | 'ui-state';
+export type AgentCommandName = 'snapshot' | 'plan' | 'generate' | 'ui-state' | 'profiles';
 
 // Valori compilati nella UI del plugin: l'agente li usa al posto dei default (nome output, nomi base, section).
 export type UiState = {

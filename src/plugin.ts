@@ -5,6 +5,10 @@ import {
 } from './core';
 import { DEFAULT_LANGUAGE_SETTINGS, readLanguageSettings, type LanguageSettings } from './language-catalog';
 import type { AgentCommandMessage } from './agent-protocol';
+import { Archive, readArchiveState, runProfileAction, validateProfile, type BrandProfile, type ProfileAction, type ProfilesState } from './profiles';
+
+// Profili di base curati dall'amministratore: la build li legge da brand-profiles/ e li inietta qui (ADR 0002).
+declare const __BASE_PROFILES__: unknown[] | undefined;
 
 type GenerateRequest = {
   kind: 'generate';
@@ -24,6 +28,7 @@ type InspectRequest = {
 };
 type SaveLanguageSettingsRequest = { kind: 'save-language-settings'; settings: LanguageSettings };
 type ReadLocalsRequest = { kind: 'read-locals'; frameIds: string[] };
+type ProfilesRequest = { kind: 'profiles'; requestId: string; request: ProfileAction };
 type Replacement = { id: string; name: string; language: string; master: string; frameId: string; role: 'master' | 'locale' };
 type PreparedUpdate = {
   text: string;
@@ -35,6 +40,13 @@ figma.showUI(__html__, { width: 980, height: 780, themeColors: true });
 
 const DATA = { role: 'autoFillRole', group: 'autoFillGroup', language: 'autoFillLanguage', primary: 'autoFillPrimary', source: 'autoFillSourceId', textSource: 'autoFillTextSourceId', sectionMode: 'autoFillSectionMode' } as const;
 const LANGUAGE_SETTINGS_KEY = 'autoFillLanguageSettingsV1';
+const PROFILES_KEY = 'autoFillProfilesV1';
+const BASE_PROFILES: BrandProfile[] = (typeof __BASE_PROFILES__ === 'undefined' ? [] : __BASE_PROFILES__).flatMap(item => {
+  try { return [validateProfile(item)]; } catch { return []; }
+});
+let archive: Archive | null = null;
+let profileNotices: string[] = [];
+let profilesWrite = Promise.resolve();
 let settingsWrite = Promise.resolve();
 let generationInProgress = false;
 let selectionRevision = 0;
@@ -723,7 +735,42 @@ async function ensureSelection(frameIds: string[]): Promise<void> {
 }
 
 // Comandi inviati dal server MCP tramite il bridge: riusano gli stessi flussi della UI.
+async function loadArchive(): Promise<Archive> {
+  if (archive) return archive;
+  let stored: unknown = null;
+  try { stored = await figma.clientStorage.getAsync(PROFILES_KEY); }
+  catch { /* Senza archiviazione locale restano disponibili i Profili di base. */ }
+  const loaded = new Archive(BASE_PROFILES, readArchiveState(stored));
+  profileNotices = loaded.reconcile();
+  archive = loaded;
+  if (profileNotices.length) await persistArchive(loaded);
+  return loaded;
+}
+
+function persistArchive(current: Archive): Promise<void> {
+  const snapshot = JSON.parse(JSON.stringify(current.state));
+  profilesWrite = profilesWrite.catch(() => {}).then(() => figma.clientStorage.setAsync(PROFILES_KEY, snapshot));
+  return profilesWrite;
+}
+
+function profilesState(current: Archive): ProfilesState {
+  return { profiles: current.list(), selected: current.state.selected, notices: profileNotices };
+}
+
+// Unica porta d'accesso all'archivio, per la UI e per l'agente: dopo ogni modifica la UI riceve lo stato aggiornato.
+async function profileAction(request: ProfileAction, origin: 'ui' | 'agent'): Promise<unknown> {
+  const current = await loadArchive();
+  const { data, changed } = runProfileAction(current, request);
+  if (changed) {
+    await persistArchive(current);
+    const selected = request.action === 'select' ? current.selected() : undefined;
+    figma.ui.postMessage({ kind: 'profiles-state', ...profilesState(current), ...(selected !== undefined ? { applied: selected, by: origin } : {}) });
+  }
+  return data;
+}
+
 async function runAgentCommand(message: AgentCommandMessage): Promise<unknown> {
+  if (message.command === 'profiles') return profileAction(message.payload as ProfileAction, 'agent');
   if (message.command === 'snapshot') {
     const ids = (message.payload as { frameIds?: string[] } | undefined)?.frameIds;
     let frames: FrameNode[];
@@ -750,13 +797,25 @@ async function runAgentCommand(message: AgentCommandMessage): Promise<unknown> {
   throw new Error(`Comando sconosciuto: ${String(message.command)}`);
 }
 
-figma.ui.onmessage = async (message: GenerateRequest | InspectRequest | SaveLanguageSettingsRequest | ReadLocalsRequest | AgentCommandMessage | { kind: 'ready' }) => {
+figma.ui.onmessage = async (message: GenerateRequest | InspectRequest | SaveLanguageSettingsRequest | ReadLocalsRequest | ProfilesRequest | AgentCommandMessage | { kind: 'ready' }) => {
   if (message.kind === 'ready') {
     let settings: unknown = DEFAULT_LANGUAGE_SETTINGS;
     try { settings = await figma.clientStorage.getAsync(LANGUAGE_SETTINGS_KEY); }
     catch { /* A fresh configuration is still usable if local storage is unavailable. */ }
+    // L'archivio dei profili arriva prima delle impostazioni: la UI li ha entrambi quando ridisegna.
+    const current = await loadArchive();
+    figma.ui.postMessage({ kind: 'profiles-state', ...profilesState(current) });
+    profileNotices = [];
     figma.ui.postMessage({ kind: 'language-settings', settings: readLanguageSettings(settings) });
     await sendSelection();
+    return;
+  }
+  if (message.kind === 'profiles') {
+    try {
+      figma.ui.postMessage({ kind: 'profiles-result', requestId: message.requestId, ok: true, data: await profileAction(message.request, 'ui') });
+    } catch (error) {
+      figma.ui.postMessage({ kind: 'profiles-result', requestId: message.requestId, ok: false, error: (error as Error).message });
+    }
     return;
   }
   if (message.kind === 'agent-command') {

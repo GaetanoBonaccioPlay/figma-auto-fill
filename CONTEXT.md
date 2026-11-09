@@ -5,12 +5,24 @@ Creazione delle varianti linguistiche di frame Figma a partire da una tabella di
 ## Language
 
 **Brand**:
-Il cliente o marchio per cui si producono le varianti; determina il Profilo brand da applicare.
+Il cliente o marchio per cui si producono le varianti. È facoltativo: una sessione può lavorare senza Brand, e quando c'è il suo Profilo brand suggerisce impostazioni senza imporle.
 _Avoid_: cliente, marchio, account
 
 **Profilo brand**:
-L'insieme di impostazioni ricorrenti di un Brand: modello del nome di output, lingua principale, lingue e paesi abituali, organizzazione in section, glossario opzionale, Livelli esclusi e abbinamenti confermati. Si esporta e importa come file per condividerlo tra colleghi.
+L'insieme di conoscenze ricorrenti su un Brand, usate come suggerimenti: Modello Excel, modello del nome di output, lingua principale, lingue e paesi abituali, organizzazione in section, glossario opzionale, Livelli esclusi e abbinamenti confermati. Nasce da un Excel cliente non riconosciuto, solo dopo conferma dell'utente. Si esporta e importa come file per condividerlo tra colleghi.
 _Avoid_: preset, template, configurazione brand
+
+**Profilo di base**:
+Un Profilo brand curato dall'amministratore del repository e distribuito dentro il plugin; ogni designer lo trova già disponibile e può selezionarlo.
+_Avoid_: profilo ufficiale, profilo di sistema, preset
+
+**Profilo personale**:
+Un Profilo brand creato da un designer per conto proprio, che resta sul suo computer finché non lo esporta o non viene promosso a Profilo di base.
+_Avoid_: profilo utente, profilo locale
+
+**Aggiunte personali**:
+Ciò che un designer impara lavorando con un Profilo di base (Livelli esclusi, abbinamenti confermati, lingue, voci di glossario, impostazioni diverse), salvato a parte e sommato al Profilo di base senza modificarlo; in caso di conflitto prevale l'aggiunta. Sopravvive agli aggiornamenti del Profilo di base e si può esportare per proporla all'amministratore.
+_Avoid_: override, fork, copia del profilo
 
 **Glossario brand**:
 Elenco di termini di un Brand che non vanno tradotti o hanno una traduzione obbligata.
@@ -20,12 +32,20 @@ _Avoid_: dizionario, termbase
 File di traduzioni fornito dal cliente o dall'agenzia, con struttura libera (fogli, colonne e righe qualsiasi), distinto dal formato `Translations` del plugin.
 _Avoid_: file traduzioni, sheet, template Excel
 
+**Modello Excel**:
+La struttura di un Excel cliente svuotata dei testi: fogli, intestazioni con la loro lingua, colonna ID, Colonna sorgente ed Etichette ricorrenti. Le celle delle colonne lingua e gli ID non vengono conservati. Ogni Brand ha di norma il proprio; serve a riconoscere a quale Brand somiglia un Excel cliente nuovo, come suggerimento e mai come vincolo.
+_Avoid_: template, template Excel, layout
+
+**Etichetta ricorrente**:
+Il valore di una colonna non di lingua dell'Excel cliente che nomina un campo e torna uguale a ogni campagna (per esempio `Subject line`, `Preheader`, `CTA`); fa parte del Modello Excel.
+_Avoid_: chiave, label, campo
+
 **Abbinamento**:
 Il collegamento tra una riga dell'Excel cliente e un livello di testo di un frame selezionato; è *esatto* quando il testo sorgente coincide, *simile* quando richiede conferma.
 _Avoid_: mapping, match, associazione
 
 **Colonna sorgente**:
-La colonna dell'Excel cliente scritta nella lingua principale del Profilo brand, usata per riconoscere i testi presenti in Figma.
+La colonna dell'Excel cliente i cui testi coincidono con quelli presenti in Figma, usata per riconoscerli. Si sceglie dai dati dell'Excel; la lingua principale del Profilo brand è solo un indizio.
 _Avoid_: colonna master, colonna base
 
 **Livello orfano**:
