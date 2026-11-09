@@ -163,6 +163,10 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     const match = (await env.call('match_selection')).data;
     assert.deepEqual(match.summary, { layers: 3, exact: 2, similar: 0, orphans: 1, multiLevel: 0, emptyLayersSkipped: 0, excluded: 0 });
     assert.deepEqual(match.orphans.map(item => item.key), ['legal']);
+    // FR non ha traduzioni nelle righe usate dai frame: non serve generarla
+    assert.deepEqual(match.languages.needed, ['IT', 'EN', 'DE']);
+    assert.deepEqual(match.languages.notNeeded, ['FR']);
+    assert.deepEqual(match.languages.coverage.DE, { filled: 1, of: 2, missingRows: [3] });
     const confirm = (await env.call('confirm_matches', { accept_similar: 'all' })).data;
     assert.equal(confirm.matched, 2);
 
@@ -179,7 +183,7 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.equal(state.generated.sectionMode, 'locale');
     assert.deepEqual(state.generated.naming, { template: '{Nome}-{Lingua}', start: 1, date: todayStamp(new Date(2026, 10, 9)) });
     assert.equal(todayStamp(new Date(2026, 10, 9)), '261109');
-    assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE', 'FR']);
+    assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE']);
     assert.deepEqual(state.generated.rows.map(row => [row.key, row.translate]), [['headline', true], ['cta', true], ['legal', false]]);
     assert.deepEqual(state.generated.rows[1].values, { IT: 'Acquista ora', EN: 'Shop now' });
     assert.equal(state.generated.rows[0].values.DE, 'Entdecke die neue Kollektion');
@@ -231,6 +235,7 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     await env.call('generate_exports', { on_conflict: 'replace' }); // rigenera: le correzioni manuali vengono perse nel finto, come in un nuovo export
     state.manual = { cta: { DE: 'Jetzt kaufen' } };
     state.exports = exportsFrom(state.generated, state.manual);
+    assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE', 'FR'], 'con una Traduzione AI anche FR diventa necessaria');
     assert.equal(state.generated.rows[0].values.FR, 'Découvrez la nouvelle collection');
     const withAi = (await env.call('write_updated_excel', { overwrite: [{ row: 2, language: 'EN' }] })).data;
     assert.ok(withAi.written.some(item => item.language === 'FR' && item.source === 'ai' && item.text === 'Découvrez la nouvelle collection'));
@@ -333,7 +338,7 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
       const ask = (await env.call('generate_exports')).data;
       assert.equal(ask.status, 'confirm-languages');
       assert.deepEqual(ask.pluginLanguages, ['EN', 'DE']);
-      assert.deepEqual(ask.excelLanguages, ['EN', 'FR', 'DE']);
+      assert.deepEqual(ask.neededLanguages, ['EN', 'FR', 'DE']);
       assert.equal(state.generated, null, 'nessun export generato prima della risposta');
       const chosen = (await env.call('generate_exports', { languages: ['EN', 'DE'], section_mode: 'locale' })).data;
       assert.equal(chosen.status, 'done');
@@ -347,6 +352,42 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
       assert.equal(state.generated.naming.template, '{Nome}');
       assert.deepEqual(state.generated.baseNames, { '1:1': 'Hero' }, 'senza stato UI vale il nome base del frame');
       assert.equal(state.generated.sectionMode, 'none');
+    } finally { FRAME.textLayers = original; }
+  } finally { await env.close(); }
+});
+
+test('lingue: servono solo quelle con traduzioni nelle righe usate dai frame, non quelle di un disclaimer fuori selezione', async () => {
+  const env = await setup();
+  const state = { existing: [], exports: {} };
+  try {
+    const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{
+      name: 'S',
+      rows: [
+        ['English', 'French', 'German', 'FR-CH', 'Dutch'],
+        ['Shop now', 'Commander', 'Bestellen', '', ''],
+        ['Discover', '', 'Entdecken', '', ''],
+        ['Disclaimer: offer valid in selected stores', 'Offre valable', 'Angebot gültig', 'Offre valable en Suisse', 'Aanbieding geldig']
+      ]
+    }]);
+    await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'] });
+    await env.call('analyze_client_excel', { path: excel });
+    await env.connectPlugin(state);
+    const original = FRAME.textLayers;
+    FRAME.textLayers = [
+      { id: 'a', key: 'cta', text: 'Shop now', markup: 'Shop now' },
+      { id: 'b', key: 'headline', text: 'Discover', markup: 'Discover' }
+    ];
+    try {
+      const match = (await env.call('match_selection')).data;
+      assert.equal(match.summary.exact, 2);
+      assert.deepEqual(match.languages.needed, ['EN', 'FR', 'DE']);
+      assert.deepEqual(match.languages.notNeeded, ['FR_CH', 'NL']);
+      assert.deepEqual(match.languages.coverage.FR, { filled: 1, of: 2, missingRows: [3] });
+      await env.call('generate_exports');
+      assert.deepEqual(state.generated.targets, ['EN', 'FR', 'DE'], 'il disclaimer non porta FR_CH e NL negli export');
+      // il designer può comunque chiederle in modo esplicito
+      await env.call('generate_exports', { languages: ['FR', 'NL'] });
+      assert.deepEqual(state.generated.targets, ['EN', 'FR', 'NL']);
     } finally { FRAME.textLayers = original; }
   } finally { await env.close(); }
 });

@@ -146,7 +146,7 @@ Prima di iniziare, dai nomi univoci ai livelli di testo da tradurre, per esempio
 
 ## Modalità agente (MCP)
 
-Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: chiede il Brand, analizza l'Excel e fa confermare le lingue, abbina i testi dei frame alle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
+Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: chiede il Brand, analizza l'Excel, abbina i testi dei frame alle righe, fa confermare le lingue che servono a quelle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
 
 ### Configurazione
 
@@ -169,9 +169,9 @@ Il collegamento vale solo per il plugin importato da manifest (modalità svilupp
 | Passo | Cosa succede | Strumenti |
 | --- | --- | --- |
 | 1. Brand | L'agente chiede il Brand e carica il suo Profilo brand (modello del nome, lingue, section, glossario) | `list_brand_profiles`, `get_brand_profile`, `save_brand_profile` |
-| 2. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e propone la Colonna sorgente; tu confermi lingue e mappatura. In caso di differenze con il profilo vale l'Excel | `analyze_client_excel` |
+| 2. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e propone la Colonna sorgente; tu confermi la mappatura. In caso di differenze con il profilo vale l'Excel | `analyze_client_excel` |
 | 3. Selezione | Legge i frame selezionati e i livelli di testo visibili | `bridge_status`, `get_selection` |
-| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand | `match_selection`, `exclude_layers`, `confirm_matches` |
+| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand. Solo a questo punto l'agente ti propone le lingue: quelle con almeno una traduzione nelle righe usate dai frame. Una colonna compilata solo in righe fuori dalla selezione (per esempio un disclaimer tradotto in più lingue) non viene proposta | `match_selection`, `exclude_layers`, `confirm_matches` |
 | 5. Generazione | Il plugin crea gli export come nel flusso manuale. Se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
 | 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` con le sole righe usate dai frame | `write_updated_excel` |
 | 7. Traduzione AI | Solo se la chiedi: traduce le celle vuote rispettando il glossario | `list_empty_cells`, `save_ai_translations` |

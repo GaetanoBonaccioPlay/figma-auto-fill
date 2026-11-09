@@ -45,10 +45,11 @@ export function todayStamp(now = new Date()): string {
 export const WORKFLOW = `Segui questi passi, uno alla volta, chiedendo conferma al designer dove indicato.
 REGOLA GENERALE: davanti a un'incongruenza (lingue del plugin diverse da quelle dell'Excel, testi o traduzioni mancanti, nomi o impostazioni che non tornano, risposte "conflict" o "confirm-languages") NON decidere da solo e non andare avanti: fai una domanda breve al designer, con una proposta consigliata, e agisci solo dopo la risposta.
 1. BRAND — chiedi per quale Brand si lavora. Usa list_brand_profiles e poi get_brand_profile (che seleziona il Brand). Se non esiste, proponi di crearlo con save_brand_profile.
-2. EXCEL CLIENTE — chiedi il percorso dell'Excel e chiama analyze_client_excel. Mostra foglio, lingue trovate (intestazione → codice), Colonna sorgente proposta e le differenze con il Profilo brand; chiedi conferma o correzioni.
+2. EXCEL CLIENTE — chiedi il percorso dell'Excel e chiama analyze_client_excel. Mostra foglio, colonne lingua trovate (intestazione → codice), Colonna sorgente proposta e le differenze con il Profilo brand; chiedi conferma o correzioni della mappatura. NON chiedere ancora quali lingue generare: dipende dalle righe usate dai frame (passo 4).
 3. SELEZIONE — chiedi di selezionare i frame in Figma con il plugin aperto (bridge_status, get_selection).
 4. ABBINAMENTO — chiama match_selection con le colonne confermate. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand) e richiama match_selection. Registra le decisioni con confirm_matches.
-5. GENERAZIONE — chiama generate_exports. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
+   LINGUE — solo ora, dopo l'abbinamento, proponi le lingue da generare: quelle in "languages.needed" (le colonne con almeno una traduzione nelle righe usate dai frame). Le lingue in "languages.notNeeded" hanno traduzioni solo in righe che non sono nei frame selezionati (es. un disclaimer): non proporle e dillo in una riga. Se una lingua necessaria ha celle vuote (missingRows), segnalalo. Chiedi conferma.
+5. GENERAZIONE — chiama generate_exports con le lingue confermate. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
 6. EXCEL AGGIORNATO — chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
 7. TRADUZIONE AI (facoltativa) — alla fine chiedi SOLO se il designer vuole tradurre le celle vuote (list_empty_cells ne dà il numero). Se sì, traduci rispettando il Glossario brand, fai rivedere le traduzioni, salvale con save_ai_translations e rilancia generate_exports e write_updated_excel.`;
 
@@ -86,6 +87,25 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
   };
   const snapshot = async (frameIds?: string[]): Promise<FrameInfo[]> =>
     (await deps.bridge.request<{ frames: FrameInfo[] }>('snapshot', frameIds ? { frameIds } : undefined)).frames;
+  // Lingue che servono davvero: quelle con almeno una traduzione (o Traduzione AI) nelle righe usate dai frame.
+  // Una colonna piena solo su righe fuori selezione (es. un disclaimer) non produrrebbe export utili.
+  const languageNeeds = () => {
+    const excel = requireExcel();
+    const primary = requireBrand().primaryLanguage;
+    const usedRows = [...new Set([...session.accepted.values()].map(item => item.row))].sort((a, b) => a - b).map(row => rowByNumber(excel, row));
+    const coverage: Record<string, { filled: number; of: number; missingRows: number[] }> = {};
+    for (const code of Object.keys(excel.languageColumns)) {
+      if (code === primary) continue;
+      const filled = usedRows.filter(row => row.values[code]?.trim() || session.ai.has(`${row.row}\u0000${code}`));
+      coverage[code] = { filled: filled.length, of: usedRows.length, missingRows: usedRows.filter(row => !filled.includes(row)).map(row => row.row) };
+    }
+    const codes = Object.keys(coverage);
+    return {
+      needed: [primary, ...codes.filter(code => coverage[code].filled > 0)],
+      notNeeded: codes.filter(code => coverage[code].filled === 0),
+      coverage
+    };
+  };
   const unmatchedLayers = () => session.layers.filter(layer => normalizeText(layer.text) && !session.accepted.has(layerId(layer)));
   const ref = (layer: LayerRef) => ({ frame: layer.frame, key: layer.key, text: layer.text });
 
@@ -248,6 +268,8 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
           ? 'Se alcuni orfani sono livelli di contorno (To:, Reply to:, data, logo) proponi al designer di escluderli con exclude_layers, poi richiama match_selection.'
           : undefined,
         multiLevel: result.multiLevel.map(cell => ({ row: cell.row, text: cell.text, layers: cell.layers.map(ref) })),
+        languages: languageNeeds(),
+        languagesHint: 'Proponi al designer solo le lingue in languages.needed; quelle in notNeeded hanno traduzioni solo in righe fuori dai frame selezionati.',
         warnings
       };
     });
@@ -291,6 +313,7 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
       return {
         matched: session.accepted.size,
         orphans: unmatchedLayers().map(ref),
+        languages: languageNeeds(),
         rememberedInBrandProfile: saved
       };
     });
@@ -314,7 +337,7 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
   register('generate_exports',
     'Fa generare al plugin le varianti linguistiche in EXPORT per i frame selezionati. Se esistono già export con gli stessi nomi risponde "conflict": chiedi se sostituire o creare una nuova versione e richiama con on_conflict.',
     {
-      languages: z.array(z.string()).optional().describe('Lingue da generare (default: tutte quelle dell\'Excel)'),
+      languages: z.array(z.string()).optional().describe('Lingue da generare (default: quelle con traduzioni nelle righe usate dai frame, vedi languages.needed)'),
       on_conflict: z.enum(['replace', 'version']).optional(),
       section_mode: z.enum(['none', 'locale', 'base']).optional()
     },
@@ -325,7 +348,8 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
       if (!frames || !session.match) throw new Error('Esegui prima match_selection');
       if (!session.accepted.size) throw new Error('Nessun livello abbinato: controlla Colonna sorgente e frame selezionati');
       const primary = brand.primaryLanguage;
-      const targets = [...new Set([primary, ...(languages ?? Object.keys(excel.languageColumns)).map(normalizeLanguage)])];
+      const targets = [...new Set([primary, ...(languages ?? languageNeeds().needed).map(normalizeLanguage)])];
+      if (targets.length === 1) throw new Error('Nessuna traduzione nelle righe usate dai frame: controlla le colonne lingua o passa languages');
 
       const rows: TranslationRow[] = session.layers.map(layer => {
         const accepted = session.accepted.get(layerId(layer));
@@ -350,14 +374,14 @@ export function createMcpServer(deps: { bridge: PluginLink; brands: BrandStore; 
       const naming = fromPlugin
         ? { template: ui!.naming.template, start: ui!.naming.start, date: ui!.naming.date || todayStamp(now()) }
         : { template: brand.naming.template, start: brand.naming.start, date: todayStamp(now()) };
-      // Incongruenza: il plugin ha lingue selezionate diverse da quelle dell'Excel. Non si sceglie in silenzio.
+      // Incongruenza: il plugin ha lingue selezionate diverse da quelle che servono. Non si sceglie in silenzio.
       const pluginTargets = new Set([...(ui?.targets ?? []), primary]);
       if (!languages && ui?.targets.length && (pluginTargets.size !== targets.length || targets.some(code => !pluginTargets.has(code)))) {
         return {
           status: 'confirm-languages',
-          message: 'Le lingue selezionate nel plugin non coincidono con quelle dell\'Excel. Chiedi al designer quali generare, poi richiama generate_exports passando languages.',
+          message: 'Le lingue selezionate nel plugin non coincidono con quelle che servono per i frame (traduzioni presenti nelle righe usate). Chiedi al designer quali generare, poi richiama generate_exports passando languages.',
           pluginLanguages: [...pluginTargets],
-          excelLanguages: targets
+          neededLanguages: targets
         };
       }
       const frameIds = frames.map(frame => frame.id);
