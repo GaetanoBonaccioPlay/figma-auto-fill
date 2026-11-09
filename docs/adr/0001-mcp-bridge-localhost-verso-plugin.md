@@ -9,5 +9,6 @@ Un agente AI deve poter guidare il flusso di localizzazione (selezione frame, li
 
 ## Consequences
 
-- Il manifest non è più `networkAccess: none`: va consentito `localhost` (il README va aggiornato, oggi dichiara "non c'è un server").
+- Il manifest consente `localhost` solo tramite `devAllowedDomains`, valido per il plugin importato da manifest in sviluppo: pubblicare il plugin con la modalità agente richiede una decisione separata sull'accesso alla rete.
+- Il server accetta solo connessioni su loopback con origine `null` (iframe del plugin), per impedire a una pagina web di farsi passare per il plugin.
 - La sessione dell'agente funziona solo con il plugin aperto in Figma Desktop.

@@ -6,9 +6,9 @@ Plugin per Figma Design che crea le varianti linguistiche di uno o più frame a 
 
 *Tutti gli screenshot mostrano l'interfaccia del plugin con dati dimostrativi di una campagna fittizia.*
 
-**[Funzionalità](#funzionalità)** · **[Avvio](#avvio)** · **[Come si usa](#come-si-usa)** · **[Formattazione e limiti](#formattazione-e-limiti)** · **[Sviluppo](#sviluppo)**
+**[Funzionalità](#funzionalità)** · **[Avvio](#avvio)** · **[Come si usa](#come-si-usa)** · **[Modalità agente (MCP)](#modalità-agente-mcp)** · **[Formattazione e limiti](#formattazione-e-limiti)** · **[Sviluppo](#sviluppo)**
 
-Interfaccia e logica sono scritte in TypeScript vanilla. L'Excel viene letto dentro il plugin: non c'è un server e i contenuti non vengono inviati in rete (`networkAccess` è impostato su `none` nel manifest).
+Interfaccia e logica sono scritte in TypeScript vanilla. Nell'uso manuale l'Excel viene letto dentro il plugin e i contenuti non vengono inviati in rete. La [modalità agente](#modalità-agente-mcp) è facoltativa: collega il plugin a un server MCP che gira sul tuo computer, raggiungibile solo da `localhost` (`devAllowedDomains` nel manifest).
 
 ## Funzionalità
 
@@ -120,6 +120,50 @@ Prima di iniziare, dai nomi univoci ai livelli di testo da tradurre, per esempio
 - I livelli di testo nascosti, o dentro un gruppo o frame nascosto, non compaiono tra i campi da tradurre e restano invariati negli export.
 - Se più livelli visibili hanno lo stesso nome, il plugin li numera in ordine (`headline_1`, `headline_2`, …) senza rinominarli in Figma e mostra un avviso sotto l'anteprima.
 
+## Modalità agente (MCP)
+
+Un agente AI (per esempio Claude Code) può guidare tutto il flusso partendo da un **Excel cliente** con struttura libera: chiede il Brand, analizza l'Excel e fa confermare le lingue, abbina i testi dei frame alle righe, fa generare gli export dal plugin e scrive un **Excel aggiornato** con i testi usati in Figma. Il plugin resta l'unico a modificare Figma ([ADR 0001](docs/adr/0001-mcp-bridge-localhost-verso-plugin.md)); termini come *Profilo brand* e *Abbinamento* sono definiti in [CONTEXT.md](CONTEXT.md).
+
+### Configurazione
+
+1. Esegui `npm install` e `npm run build`.
+2. Registra il server nel client MCP, per esempio con Claude Code:
+   ```
+   claude mcp add figma-auto-fill -- node /percorso/assoluto/figma-auto-fill/dist/server/index.mjs
+   ```
+3. Apri il plugin in Figma Desktop: nell'intestazione compare **Agente collegato** quando il server è raggiungibile. Se il server riparte, il plugin si ricollega da solo. Il collegamento è su `ws://localhost:3055`; con la variabile `FIGMA_AUTOFILL_PORT` puoi cambiare la porta del server, ma il plugin usa sempre la 3055.
+4. Avvia il prompt MCP **`localizza-frame`** (indica Brand ed Excel se li hai già) oppure descrivi il lavoro all'agente.
+
+Il collegamento vale solo per il plugin importato da manifest (modalità sviluppo). Per distribuire il plugin con la modalità agente serve una decisione separata sull'accesso a `localhost`.
+
+### Il dialogo
+
+| Passo | Cosa succede | Strumenti |
+| --- | --- | --- |
+| 1. Brand | L'agente chiede il Brand e carica il suo Profilo brand (modello del nome, lingue, section, glossario) | `list_brand_profiles`, `get_brand_profile`, `save_brand_profile` |
+| 2. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e propone la Colonna sorgente; tu confermi lingue e mappatura. In caso di differenze con il profilo vale l'Excel | `analyze_client_excel` |
+| 3. Selezione | Legge i frame selezionati e i livelli di testo visibili | `bridge_status`, `get_selection` |
+| 4. Abbinamento | Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo | `match_selection`, `confirm_matches` |
+| 5. Generazione | Il plugin crea gli export come nel flusso manuale. Se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
+| 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` | `write_updated_excel` |
+| 7. Traduzione AI | Solo se la chiedi: traduce le celle vuote rispettando il glossario | `list_empty_cells`, `save_ai_translations` |
+
+### Regole sull'Excel
+
+- L'originale non viene mai modificato: le scritture vanno nella copia `_updated.xlsx`. Fogli, larghezze e stili del cliente restano, ma ExcelJS può non conservare elementi avanzati (grafici, tabelle pivot, immagini): controlla il file prima di rimandarlo.
+- Una cella già piena **non** viene sovrascritta. Se differisce da Figma l'agente te lo segnala come conflitto, e si scrive solo con la tua conferma (`overwrite`).
+- Non finisce nell'Excel il testo di *fallback*: una cella vuota resta vuota finché in Figma nessuno scrive una traduzione vera.
+- Le celle modificate sono evidenziate (giallo da Figma, azzurro Traduzione AI, arancio righe aggiunte) e hanno una nota con la fonte. I Livelli orfani vengono aggiunti in coda, con colonna ID `Frame/chiave` se il foglio ha una colonna ID.
+- Una **Cella multi-livello** (il testo di più livelli nella stessa cella) non viene abbinata: l'agente la segnala e la sistemi tu nel file o in Figma.
+
+### Profili brand
+
+Ogni Brand è un file JSON nella cartella `brand-profiles/` del progetto (cambiabile con `FIGMA_AUTOFILL_BRANDS_DIR`). Contiene modello del nome e numero iniziale, lingua principale, lingue abituali, organizzazione in section, glossario e gli **Abbinamenti confermati**, che alle sessioni successive risultano esatti. Per condividerlo con i colleghi usa `export_brand_profile` (crea un file) e `import_brand_profile` (non sovrascrive un profilo con lo stesso nome senza `overwrite`; con `rename` lo importa con un altro nome).
+
+### Sicurezza
+
+Il server ascolta solo su `127.0.0.1` e accetta connessioni dal plugin Figma (origine `null`), non da pagine web. Non contiene chiavi API: la Traduzione AI la esegue il modello dell'agente.
+
 ## Formattazione e limiti
 
 - Le celle supportano `<b>`, `<i>`, `<u>` e `<s>`, anche annidati dove Figma può rappresentare la combinazione. Per scrivere un carattere `<` letterale usa `&lt;`; per `&` usa `&amp;`.
@@ -130,7 +174,7 @@ Prima di iniziare, dai nomi univoci ai livelli di testo da tradurre, per esempio
 
 ## Sviluppo
 
-Esegui `npm run check` per controllare i tipi, compilare il plugin e lanciare i test. I test coprono codici ISO, preset e preferenze linguistiche, nomi e date, tag, fallback, intervalli e incolla TSV, lettura/scrittura `.xlsx`, colonne con frame di larghezze diverse, scelta tra sostituzione e versione, riedizione con MASTER e pulizia in caso di errore Figma.
+Esegui `npm run check` per controllare i tipi (plugin e server), compilare tutto e lanciare i test. `npm run server` avvia il server MCP. I test del plugin coprono codici ISO, preset e preferenze linguistiche, nomi e date, tag, fallback, intervalli e incolla TSV, lettura/scrittura `.xlsx`, colonne con frame di larghezze diverse, scelta tra sostituzione e versione, riedizione con MASTER e pulizia in caso di errore Figma; quelli del server coprono bridge, Profili brand, analisi e abbinamento dell'Excel cliente, scrittura dell'Excel aggiornato e il dialogo MCP completo con un plugin simulato.
 
 | File | Contenuto |
 | --- | --- |
@@ -141,3 +185,8 @@ Esegui `npm run check` per controllare i tipi, compilare il plugin e lanciare i 
 | `src/grid.ts` | Intervalli di celle e TSV per copia e incolla |
 | `src/rich-text.ts` | Conversione dell'HTML incollato nei tag di formattazione |
 | `src/workbook.ts` | Lettura e scrittura `.xlsx` |
+| `src/agent-bridge.ts`, `src/agent-protocol.ts` | Collegamento della UI al server MCP e protocollo dei messaggi |
+| `server/index.ts`, `server/tools.ts` | Server MCP: strumenti, prompt `localizza-frame` e sessione |
+| `server/bridge.ts` | WebSocket su localhost verso il plugin |
+| `server/brands.ts` | Profili brand: archivio, esportazione, importazione |
+| `server/excel-analyze.ts`, `server/match.ts`, `server/excel-update.ts` | Analisi dell'Excel cliente, abbinamento, Excel aggiornato |
