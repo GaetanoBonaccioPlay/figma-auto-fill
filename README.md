@@ -29,7 +29,7 @@ Non serve installare Node.js né usare il terminale. Dalla pagina **[Releases](h
 **Modalità agente con Claude Desktop** (facoltativa)
 
 1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
-2. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
+2. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica le traduzioni nella chat o su un file excel.
 
 Se l'intestazione dice **Agente in uso da un altro plugin**, il plugin è aperto anche in un altro file Figma: chiudilo lì e dopo pochi secondi questo si collega. Se il plugin è aperto in un solo file, chiudi le schede del browser che non conosci e riapri il plugin.
 
