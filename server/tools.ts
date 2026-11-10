@@ -784,15 +784,16 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     'localizza-frame',
     {
       title: 'Localizza i frame da un Excel cliente',
-      description: 'Guida il dialogo: Excel cliente → Brand riconosciuto (facoltativo) → abbinamento e lingue → generazione → Excel aggiornato → Traduzione AI facoltativa → reference.',
-      argsSchema: { brand: z.string().optional(), excel_path: z.string().optional() }
+      description: 'Guida il dialogo: Excel cliente → Brand riconosciuto (facoltativo) → abbinamento e lingue → generazione → Excel aggiornato → Traduzione AI facoltativa → reference.'
+      // Nessun argomento: i client (es. Claude Desktop) mostrerebbero un modulo da compilare prima di partire.
+      // Excel e Brand li chiede l'agente nel dialogo (passo 1 di WORKFLOW).
     },
-    ({ brand, excel_path }) => ({
+    () => ({
       messages: [{
         role: 'user' as const,
         content: {
           type: 'text' as const,
-          text: `Aiutami a localizzare i frame Figma selezionati partendo da un Excel cliente.\n${brand ? `Brand: ${brand}.\n` : ''}${excel_path ? `Excel cliente: ${excel_path}.\n` : ''}\n${WORKFLOW}`
+          text: `Aiutami a localizzare i frame Figma selezionati partendo da un Excel cliente.\n\n${WORKFLOW}`
         }
       }]
     })

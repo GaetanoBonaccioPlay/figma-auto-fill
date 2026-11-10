@@ -107,9 +107,9 @@ test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine 
       'list_empty_cells', 'save_ai_translations', 'clear_brand', 'pending_profile_updates', 'apply_profile_updates']) assert.ok(tools.includes(name), name);
     const prompts = (await env.client.listPrompts()).prompts;
     assert.deepEqual(prompts.map(prompt => prompt.name), ['localizza-frame']);
-    const prompt = await env.client.getPrompt({ name: 'localizza-frame', arguments: { brand: 'Acme' } });
+    assert.ok(!prompts[0].arguments?.length, 'nessun argomento: Claude Desktop non deve mostrare un modulo da compilare');
+    const prompt = await env.client.getPrompt({ name: 'localizza-frame' });
     const text = prompt.messages[0].content.text;
-    assert.match(text, /Brand: Acme/);
     const order = ['EXCEL CLIENTE', 'BRAND', 'SELEZIONE', 'ABBINAMENTO', 'GENERAZIONE', 'EXCEL AGGIORNATO', 'TRADUZIONE AI', 'REFERENCE'].map(label => text.indexOf(label));
     assert.ok(order.every((position, index) => position > (order[index - 1] ?? -1)), 'i passi devono comparire in ordine');
     assert.match(text, /SOLO se il designer vuole/);

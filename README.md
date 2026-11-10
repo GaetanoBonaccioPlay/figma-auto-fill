@@ -159,7 +159,7 @@ Con Claude Desktop basta il file `.mcpb` descritto in [Installazione per i desig
 3. Apri il plugin in Figma Desktop: nell'intestazione compare **Agente collegato** quando il server è raggiungibile. Se il server riparte, il plugin si ricollega da solo. Il collegamento è su `ws://localhost:3055`; con la variabile `FIGMA_AUTOFILL_PORT` puoi cambiare la porta del server, ma il plugin usa sempre la 3055.
 
    Ogni sessione Claude (Claude Desktop, Claude Code, VS Code) avvia il proprio server, ma la porta è una sola. Chi la trova occupata resta in attesa e la prende da solo quando si libera. Se ricevi una richiesta mentre la porta è di un'altra sessione, il server se la fa cedere e il plugin si ricollega in circa 2 secondi; la cessione non avviene mai a metà di un comando. Se `bridge_status` dice che la porta è occupata da un processo che non la cede, è un server di una versione precedente o un altro programma: trovalo con `lsof -i :3055`.
-4. Avvia il prompt MCP **`localizza-frame`** (indica l'Excel e, se vuoi, il Brand) oppure descrivi il lavoro all'agente.
+4. Avvia il prompt MCP **`localizza-frame`** (parte subito, senza moduli: l'agente ti chiede l'Excel nel dialogo) oppure descrivi il lavoro all'agente.
 
 Il collegamento vale solo per il plugin importato da manifest (modalità sviluppo). Per distribuire il plugin con la modalità agente serve una decisione separata sull'accesso a `localhost`.
 
