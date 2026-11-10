@@ -15,7 +15,7 @@ A fine sessione l'agente propone di salvare ciò che è emerso, sempre su confer
 ## Acceptance criteria
 
 - [ ] Sessione senza Brand: con un sì nasce un Profilo personale riconosciuto alla sessione successiva sullo stesso Excel; con un no l'archivio resta invariato.
-- [ ] Con Columbia di base e un Excel con PT-BR, il sì crea un'Aggiunta personale e il Profilo di base resta intatto.
+- [ ] Con Aurora di base e un Excel con PT-BR, il sì crea un'Aggiunta personale e il Profilo di base resta intatto.
 - [ ] Impostazioni diverse dal profilo non si salvano senza conferma.
 - [ ] Il prompt `localizza-frame` descrive queste proposte nel punto giusto del flusso.
 - [ ] Test end-to-end MCP (seam 1).

@@ -90,8 +90,40 @@ test('livelli ignorati: per nome, per testo normalizzato o con espressione regol
   assert.equal(ignored('Reply to:', 'Reply to:'), true, 'il testo si confronta senza punteggiatura finale');
   assert.equal(ignored('29 June 2022 18.00', '29 June 2022 18.00'), true, 'regex sul nome');
   assert.equal(ignored('data', '3 JULY 2026 09.00'), true, 'regex sul testo, senza distinzione di maiuscole');
-  assert.equal(ignored('logo', 'The North Face'), true, 'per nome, senza distinzione di maiuscole');
+  assert.equal(ignored('logo', 'Borealis'), true, 'per nome, senza distinzione di maiuscole');
   assert.equal(ignored('headline', 'FALL WINTER 2027'), false);
   assert.equal(ignored('toast', 'Toast'), false, 'nessuna corrispondenza parziale');
   assert.equal(isIgnoredLayer({ key: 'x', text: 'y' }, []), false);
+});
+
+test('stesso testo in più righe: traduzioni in conflitto = ambiguo, altrimenti vale la riga più completa', () => {
+  const values = (source, en, de = '') => ({ IT: source, EN: en, DE: de });
+  const rows = [
+    { row: 2, id: 'B1', source: 'Acquista ora', values: values('Acquista ora', 'Shop now') },
+    { row: 9, id: 'B2', source: 'Acquista ora', values: values('Acquista ora', 'Buy now') },
+    { row: 3, source: 'Scopri', values: values('Scopri', '') },
+    { row: 7, source: 'Scopri', values: values('Scopri', 'Discover', 'Entdecke') },
+    { row: 4, source: 'Spedizione', values: values('Spedizione', 'Shipping') },
+    { row: 8, source: 'Spedizione', values: values('Spedizione', 'SHIPPING') }
+  ];
+  const layers = [layer('A', 'cta', 'Acquista ora'), layer('B', 'cta', 'Acquista ora'), layer('A', 'intro', 'Scopri'), layer('A', 'ship', 'Spedizione')];
+  const result = matchLayers({ layers, rows });
+  assert.deepEqual(result.ambiguous.map(item => [item.layer.frameId, item.rows]), [['A', [2, 9]], ['B', [2, 9]]]);
+  assert.deepEqual(result.exact.map(item => [item.layer.key, item.row]), [['intro', 7], ['ship', 4]]);
+  assert.equal(result.similar.length, 0, 'un ambiguo non diventa un simile');
+  // Un testo solo simile alle righe in conflitto (refuso) è ambiguo anche lui, con le stesse righe.
+  const typo = matchLayers({ layers: [layer('C', 'cta', 'Acquista orra')], rows });
+  assert.deepEqual([typo.similar.length, typo.ambiguous.map(item => item.rows)], [0, [[2, 9]]]);
+
+  // Un Abbinamento confermato con l'ID della riga risolve l'ambiguità; senza ID no, e non è obsoleto.
+  const remembered = matchLayers({ layers: layers.slice(0, 1), rows, confirmed: [{ source: 'acquista ora', rowId: 'B2', rowSource: 'acquista ora' }] });
+  assert.deepEqual(remembered.exact.map(item => [item.row, item.via]), [[9, 'confirmed']]);
+  const withoutId = matchLayers({ layers: layers.slice(0, 1), rows, confirmed: [{ source: 'acquista ora', rowSource: 'acquista ora' }] });
+  assert.deepEqual([withoutId.ambiguous.length, withoutId.staleConfirmed.length], [1, 0]);
+});
+
+test('una regex catastrofica nei Livelli esclusi non blocca il server: si interrompe e dice quale voce togliere', () => {
+  const started = Date.now();
+  assert.throws(() => isIgnoredLayer({ key: 'x', text: `${'a'.repeat(40)}!` }, ['re:^(a|aa)+$']), /troppo lenta.*exclude_layers/);
+  assert.ok(Date.now() - started < 1000, `durata ${Date.now() - started} ms`);
 });

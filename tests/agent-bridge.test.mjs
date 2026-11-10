@@ -11,7 +11,7 @@ class FakeSocket {
   send(data) { this.sent.push(JSON.parse(data)); }
   open() { this.readyState = 1; this.onopen(); }
   receive(message) { this.onmessage({ data: JSON.stringify(message) }); }
-  drop() { this.readyState = 3; this.onclose(); }
+  drop(code = 1006) { this.readyState = 3; this.onclose({ code }); }
 }
 const listeners = [];
 const toFigma = [];
@@ -32,6 +32,8 @@ test('si collega a localhost, si presenta, inoltra i comandi a Figma e rimanda l
   assert.deepEqual(statuses, [false]);
 
   socket.open();
+  assert.deepEqual(statuses, [false], 'aperto non basta: serve il benvenuto del server');
+  socket.receive({ welcome: 'figma-auto-fill-server' });
   assert.deepEqual(statuses, [false, true]);
   assert.deepEqual(socket.sent[0], { hello: 'figma-auto-fill-plugin' });
 
@@ -63,6 +65,7 @@ test('se il server cade segnala lo stato e si ricollega da solo', () => {
   startAgentBridge(connected => statuses.push(connected));
   const first = FakeSocket.instances[0];
   first.open();
+  first.receive({ welcome: 'figma-auto-fill-server' });
   first.drop();
   assert.deepEqual(statuses, [false, true, false]);
   assert.equal(timers.at(-1).ms, 2000);
@@ -89,4 +92,33 @@ test('lo stato della UI (modello del nome, nomi base) è servito dalla UI senza 
   old.open();
   old.receive({ id: 'u2', command: 'ui-state' });
   assert.equal(old.sent.at(-1).ok, false);
+});
+
+test('rifiutato perché il server ha già un altro plugin: lo dice, senza mai dirsi collegato', () => {
+  const statuses = [];
+  FakeSocket.instances.length = 0;
+  timers.length = 0;
+  startAgentBridge((connected, status) => statuses.push(status));
+  FakeSocket.instances[0].open();
+  FakeSocket.instances[0].drop(4001);
+  assert.deepEqual(statuses, [{ connected: false, busy: false }, { connected: false, busy: true }], 'nessun «collegato» prima del rifiuto');
+  timers.find(timer => timer.ms === 1500).fn();
+  assert.equal(statuses.length, 2, 'il timer di un socket chiuso non fa nulla');
+  timers.at(-1).fn();
+  const retry = FakeSocket.instances[1];
+  retry.open();
+  retry.receive({ welcome: 'figma-auto-fill-server' });
+  assert.deepEqual(statuses.at(-1), { connected: true, busy: false });
+  assert.equal(toFigma.filter(item => item.message.pluginMessage?.command === undefined).length, 0, 'il benvenuto non va a Figma');
+});
+
+test('un server di una versione precedente non manda il benvenuto: collegato dopo una breve attesa', () => {
+  const statuses = [];
+  FakeSocket.instances.length = 0;
+  timers.length = 0;
+  startAgentBridge(connected => statuses.push(connected));
+  FakeSocket.instances[0].open();
+  assert.deepEqual(statuses, [false]);
+  timers.find(timer => timer.ms === 1500).fn();
+  assert.deepEqual(statuses, [false, true]);
 });

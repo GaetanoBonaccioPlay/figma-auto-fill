@@ -21,6 +21,10 @@ export type BridgeRequest = { id: string; command: AgentCommandName; payload?: u
 export type BridgeResponse = { id: string; ok: true; data: unknown } | { id: string; ok: false; error: string };
 // Primo messaggio inviato dal plugin dopo la connessione
 export type BridgeHello = { hello: 'figma-auto-fill-plugin' };
+// Risposta del server quando accetta il plugin (i server precedenti non la mandano).
+export type BridgeWelcome = { welcome: 'figma-auto-fill-server' };
+// Codice di chiusura con cui il server rifiuta un plugin perché ne ha già uno collegato che risponde.
+export const PLUGIN_ALREADY_CONNECTED = 4001;
 
 // UI → codice Figma / codice Figma → UI
 export type AgentCommandMessage = { kind: 'agent-command'; id: string; command: AgentCommandName; payload?: unknown };

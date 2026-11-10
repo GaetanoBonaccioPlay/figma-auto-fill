@@ -165,5 +165,5 @@ Il Profilo brand diventa una fonte di suggerimenti:
 ## Further Notes
 
 - La regola già fissata "lo stato della UI del plugin prevale sui default del profilo" resta valida per nome di output, nomi base e section. Per la scelta del Brand tra plugin e riconoscimento, invece, decide il designer.
-- Le soglie di somiglianza vanno tarate sugli Excel reali di Columbia e The North Face, che hanno Modelli Excel diversi.
-- La cartella dei Profili di base nel repository contiene già Columbia e The North Face, non ancora committati: diventano i primi Profili di base dopo la migrazione allo schema versione 2.
+- Le soglie di somiglianza vanno tarate sugli Excel reali di Aurora e Borealis, che hanno Modelli Excel diversi.
+- La cartella dei Profili di base nel repository contiene già Aurora e Borealis, non ancora committati: diventano i primi Profili di base dopo la migrazione allo schema versione 2.

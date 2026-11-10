@@ -130,13 +130,34 @@ function parseGlossary(value: unknown, path: string, issues: Issues): GlossaryEn
   return term ? { term, keep: value.keep === true, translations } : undefined;
 }
 
+const MAX_PATTERN_LENGTH = 200;
+// Un gruppo che contiene un quantificatore ed è a sua volta ripetuto, come (a+)+ o (\w*)*: la forma tipica delle
+// regex che impiegano un tempo esponenziale. Il server le esegue comunque con un tempo massimo (server/match.ts).
+const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)(?:[+*]|\{\d+,?\d*\})/;
+
+// Il motivo per cui una voce `re:` dei Livelli esclusi non è accettabile, oppure null.
+export function patternProblem(entry: string): string | null {
+  if (!entry.startsWith('re:')) return null;
+  const source = entry.slice(3);
+  try { new RegExp(source, 'i'); }
+  catch { return `Espressione regolare non valida: ${entry}`; }
+  if (source.length > MAX_PATTERN_LENGTH) return `Espressione regolare troppo lunga (massimo ${MAX_PATTERN_LENGTH} caratteri): ${entry}`;
+  if (NESTED_QUANTIFIER.test(source)) return `Espressione regolare con quantificatori annidati, troppo lenta: ${entry}`;
+  return null;
+}
+
 function parseIgnored(value: unknown, path: string, issues: Issues): string | undefined {
   const entry = text(value, path, issues);
-  if (entry?.startsWith('re:')) {
-    try { new RegExp(entry.slice(3), 'i'); }
-    catch { issues.add(path, `Espressione regolare non valida: ${entry}`); return undefined; }
-  }
+  const problem = entry ? patternProblem(entry) : null;
+  if (problem) { issues.add(path, problem); return undefined; }
   return entry;
+}
+
+// Nell'archivio già salvato una voce non più accettata (regole più severe di una versione nuova) si toglie,
+// senza perdere il resto del profilo.
+function withoutBadPatterns(value: unknown): unknown {
+  if (!isObject(value) || !Array.isArray(value.ignoredLayers)) return value;
+  return { ...value, ignoredLayers: value.ignoredLayers.filter(entry => typeof entry !== 'string' || !patternProblem(entry.trim())) };
 }
 
 function parseConfirmed(value: unknown, path: string, issues: Issues): ConfirmedMatch | undefined {
@@ -478,11 +499,12 @@ export function readExportFile(raw: unknown): BrandProfile {
 
 export function readArchiveState(value: unknown): ArchiveState {
   if (!isObject(value)) return { ...EMPTY_ARCHIVE };
-  const personal = Array.isArray(value.personal) ? value.personal.flatMap(item => { try { return [validateProfile(item)]; } catch { return []; } }) : [];
-  const additions = Array.isArray(value.additions) ? value.additions.flatMap(item => {
-    if (!isObject(item) || typeof item.base !== 'string') return [];
+  const personal = Array.isArray(value.personal) ? value.personal.flatMap(item => { try { return [validateProfile(withoutBadPatterns(item))]; } catch { return []; } }) : [];
+  const additions = Array.isArray(value.additions) ? value.additions.flatMap(raw => {
+    if (!isObject(raw) || typeof raw.base !== 'string') return [];
+    const item = withoutBadPatterns(raw) as Record<string, unknown>;
     try {
-      const snapshot = validateProfile(item.baseSnapshot);
+      const snapshot = validateProfile(withoutBadPatterns(item.baseSnapshot));
       const profile = validateProfile({ ...applyAdditionsRaw(snapshot, item), name: snapshot.name });
       return [additionsFrom(profile, snapshot)].map(result => ({ ...result, base: item.base as string }));
     } catch { return []; }

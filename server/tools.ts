@@ -1,14 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { readFile, writeFile } from 'node:fs/promises';
-import { basename, extname, resolve } from 'node:path';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, resolve } from 'node:path';
 import {
   frameLabel, normalizeLanguage, renderOutputName, shortLanguages, validateRows,
   type FrameInfo, type LanguageSuffix, type NamingOptions, type TranslationRow
 } from '../src/core';
 import type { UiState } from '../src/agent-protocol';
 import {
-  closestModelIndex, extractExcelModel, mappingFromProfile, modelSimilarity, profileNaming, recognize, validateProfile,
+  EXPORT_FORMAT, closestModelIndex, extractExcelModel, mappingFromProfile, modelSimilarity, profileNaming, recognize, validateProfile,
   type BrandProfile, type ConfirmedMatch, type ExcelModel, type ProfileOrigin, type Recognition, type SectionMode
 } from '../src/profiles';
 import { PluginProfiles } from './brands';
@@ -16,7 +16,7 @@ import type { PluginLink } from './bridge';
 import {
   analyzeWorkbook, columnLetter, columnNumber, readSheets, type AnalysisReport, type SheetData
 } from './excel-analyze';
-import { DEFAULT_SEARCH_ROOTS, resolveExcelPath, type WorkingCopies } from './excel-locate';
+import { DEFAULT_SEARCH_ROOTS, expandHome, resolveExcelPath, type WorkingCopies } from './excel-locate';
 import {
   cellToMarkup, defaultOutputPath, isGeneratedCopy, planUpdates, writeUpdatedWorkbook
 } from './excel-update';
@@ -74,7 +74,7 @@ Il Brand è un aiuto, non un vincolo: si può lavorare senza Brand e quando c'è
    In entrambi i casi, se il designer nomina un Brand passalo in brand. Mostra foglio, colonne lingua trovate (intestazione → codice) e chiedi conferma o correzioni della mappatura. NON chiedere ancora quali lingue generare: dipende dalle righe usate dai frame (passo 4).
 2. BRAND — leggi il blocco "brand" della risposta e segui "brand.next": con un candidato chiaro proponilo e chiedi conferma; con più candidati elencali e fai scegliere; se il profilo selezionato nel plugin è diverso dal Brand riconosciuto fai notare la differenza e chiedi quale usare; se non c'è nessun candidato dillo in una riga e prosegui senza Brand. Seleziona il Brand scelto con get_brand_profile. Le differenze tra Excel e profilo (profileDifferences) sono solo informative: riportale in una riga, non chiedere nulla. Se c'è profileMapping (in analyze_client_excel o get_brand_profile), il Brand conosce già questo formato e ha corretto la mappatura delle colonne (es. IE → EN_IE): mostra le correzioni nella mappatura da confermare.
 3. SELEZIONE — chiedi di selezionare i frame in Figma con il plugin aperto (bridge_status, get_selection).
-4. ABBINAMENTO — chiama match_selection con le colonne confermate. La Colonna sorgente si sceglie dai dati (sourceChoice): se differisce dalla lingua principale del profilo riportalo in una riga. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand, o nella sessione se non c'è Brand) e richiama match_selection. Registra le decisioni con confirm_matches.
+4. ABBINAMENTO — chiama match_selection con le colonne confermate. La Colonna sorgente si sceglie dai dati (sourceChoice): se differisce dalla lingua principale del profilo riportalo in una riga. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), abbinamenti ambigui ("ambiguous": lo stesso testo in più righe con traduzioni diverse; mostra le traduzioni di ogni riga e fai scegliere la riga, poi passala in confirm_matches assign), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand, o nella sessione se non c'è Brand) e richiama match_selection. Registra le decisioni con confirm_matches.
    LINGUE — solo ora, dopo l'abbinamento, proponi le lingue da generare: quelle in "languages.needed" (le colonne con almeno una traduzione nelle righe usate dai frame). Le lingue in "languages.notNeeded" hanno traduzioni solo in righe che non sono nei frame selezionati (es. un disclaimer): non proporle e dillo in una riga. Se una lingua necessaria ha celle vuote (missingRows), segnalalo. Chiedi conferma.
 5. GENERAZIONE — chiama generate_exports con le lingue confermate. Se risponde "confirm-settings", PRIMA di esportare fai le domande in "questions" con lo strumento AskUserQuestion (una domanda per voce, opzioni con gli esempi di nome o di section, la consigliata per prima): suffisso Lang o Lang-Country e section (divise per country, divise per lang, no). Non scegliere tu: di base il paese non va nel nome se la lingua non ha altre varianti (EN_GB → EN), salvo che il designer scelga Lang-Country. Poi richiama con language_suffix e section_mode. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
 6. EXCEL AGGIORNATO — solo se le traduzioni vengono da un Excel sul Mac (analyze_client_excel); con load_translations salta questo passo. Chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
@@ -185,17 +185,29 @@ export function createMcpServer(deps: {
       coverage
     };
   };
-  const unmatchedLayers = () => session.layers.filter(layer => normalizeText(layer.text) && !session.accepted.has(layerId(layer)));
+  // Abbinamenti ambigui che il designer non ha ancora risolto con confirm_matches assign.
+  const pendingAmbiguous = () => (session.match?.ambiguous ?? []).filter(item => !session.accepted.has(layerId(item.layer)));
+  // Livelli senza riga: non gli ambigui ancora da risolvere, il cui testo è nell'Excel (non vanno aggiunti come orfani).
+  const unmatchedLayers = () => {
+    const ambiguous = new Set(pendingAmbiguous().map(item => layerId(item.layer)));
+    return session.layers.filter(layer => normalizeText(layer.text) && !session.accepted.has(layerId(layer)) && !ambiguous.has(layerId(layer)));
+  };
+  const ambiguousOption = (rows: ExcelRow[], number: number) => {
+    const row = rows.find(item => item.row === number)!;
+    return { row: number, id: row.id, translations: Object.fromEntries(Object.entries(row.values).filter(([, value]) => value.trim())) };
+  };
   const ref = (layer: LayerRef) => ({ frame: layer.frame, key: layer.key, text: layer.text });
 
   // ---------- bridge ----------
-  register('bridge_status', 'Stato del collegamento con il plugin Figma Auto Fill (deve essere aperto in Figma Desktop).', {}, async () => {
+  register('bridge_status', 'Stato del collegamento con il plugin Figma Auto Fill (deve essere aperto in Figma Desktop). Se la risposta ha "notice", riferiscilo al designer.', {}, async () => {
     // Se la porta è di un'altra sessione Claude, se la fa cedere: lo stato riflette questa sessione.
     await deps.bridge.claim?.();
     return {
       connected: deps.bridge.connected,
       error: deps.bridge.connected ? null : deps.bridge.startError,
-      hint: deps.bridge.connected ? undefined : 'Apri il plugin in Figma Desktop: Plugins → Development → Figma Auto Fill'
+      hint: deps.bridge.connected ? undefined : 'Apri il plugin in Figma Desktop: Plugins → Development → Figma Auto Fill',
+      // Un client rifiutato perché c'era già un plugin collegato: va detto al designer, può essere una pagina web.
+      notice: deps.bridge.notice ?? undefined
     };
   });
 
@@ -261,10 +273,19 @@ export function createMcpServer(deps: {
     });
 
   register('export_brand_profile', 'Esporta un Profilo brand completo (base più Aggiunte personali) in un file da condividere, passando dal plugin.',
-    { name: z.string(), path: z.string().describe('Percorso del file .json di destinazione') },
-    async ({ name, path }) => {
+    { name: z.string(), path: z.string().describe('Percorso del file .brand.json di destinazione (anche ~/...); un file esistente si sovrascrive solo se è un profilo esportato') },
+    async ({ name, path: requested }) => {
+      const path = await safeExportPath(requested);
       const file = await profiles.exportFile(name);
-      await writeFile(path, `${JSON.stringify(file, null, 2)}\n`);
+      // Scrittura atomica, come per l'Excel aggiornato: un errore a metà non lascia un file troncato.
+      const temporary = `${path}.tmp-${process.pid}`;
+      try {
+        await writeFile(temporary, `${JSON.stringify(file, null, 2)}\n`);
+        await rename(temporary, path);
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+      }
       return { exported: path, origin: file.origin ?? null };
     });
 
@@ -494,6 +515,7 @@ export function createMcpServer(deps: {
         if (frame.managedRole === 'locale') warnings.push(`${frameLabel(frame)}: è un export, seleziona il MASTER o il frame sorgente`);
         for (const duplicate of frame.duplicateKeys ?? []) warnings.push(`${frameLabel(frame)}: livelli "${duplicate.name}" duplicati, rinominati ${duplicate.keys.join(', ')}`);
       }
+      if (result.ambiguous.length) warnings.push(`${result.ambiguous.length} livelli con più righe possibili e traduzioni diverse: da far scegliere al designer`);
       if (result.multiLevel.length) warnings.push(`${result.multiLevel.length} Celle multi-livello: non abbinate, vanno sistemate dal designer`);
       if (result.staleConfirmed.length) warnings.push(`${result.staleConfirmed.length} Abbinamenti confermati non più validi (riga assente nell'Excel): ignorati`);
       const differsFromProfile = Boolean(profilePrimary && primary !== profilePrimary);
@@ -507,12 +529,16 @@ export function createMcpServer(deps: {
         },
         summary: {
           layers: session.layers.length, exact: result.exact.length, similar: result.similar.length,
-          orphans: result.orphans.length, multiLevel: result.multiLevel.length, emptyLayersSkipped: result.skippedEmpty,
+          ambiguous: result.ambiguous.length, orphans: result.orphans.length, multiLevel: result.multiLevel.length, emptyLayersSkipped: result.skippedEmpty,
           excluded: excluded.length
         },
         columns: { source: columnLetter(sourceColumn), languages: Object.fromEntries(Object.entries(languageColumns).map(([code, column]) => [code, columnLetter(column)])) },
         exact: result.exact.map(item => ({ ...ref(item.layer), row: item.row, via: item.via })),
         similar: result.similar.map(item => ({ ...ref(item.layer), row: item.row, score: item.score, excelText: item.rowText })),
+        ambiguous: result.ambiguous.map(item => ({ ...ref(item.layer), options: item.rows.map(row => ambiguousOption(rows, row)) })),
+        ambiguousHint: result.ambiguous.length
+          ? 'Lo stesso testo compare in più righe con traduzioni diverse: mostra le opzioni al designer, fai scegliere la riga e registrala con confirm_matches assign. Finché non sono risolti generate_exports non parte.'
+          : undefined,
         orphans: result.orphans.map(item => ({ ...ref(item.layer), reason: item.reason, row: item.row })),
         excluded: excluded.map(ref),
         orphansHint: result.orphans.length
@@ -526,7 +552,7 @@ export function createMcpServer(deps: {
     });
 
   register('confirm_matches',
-    'Registra le decisioni del designer sul riepilogo: accetta abbinamenti simili ("all" o elenco), assegna manualmente un livello a una riga. Gli abbinamenti confermati vengono ricordati nel Profilo brand (remember), o nella sessione se non c\'è Brand.',
+    'Registra le decisioni del designer sul riepilogo: accetta abbinamenti simili ("all" o elenco), assegna manualmente un livello a una riga (anche per scegliere tra le righe di un abbinamento ambiguo). Gli abbinamenti confermati vengono ricordati nel Profilo brand (remember), o nella sessione se non c\'è Brand.',
     {
       accept_similar: z.union([z.literal('all'), z.array(z.object({ frame: z.string(), key: z.string() }))]).optional(),
       assign: z.array(z.object({ frame: z.string(), key: z.string(), row: z.number().int() })).optional(),
@@ -561,9 +587,11 @@ export function createMcpServer(deps: {
         rememberedIn = await learn({ confirmedMatches });
         saved = fresh.length;
       }
+      const stillAmbiguous = pendingAmbiguous();
       return {
         matched: session.accepted.size,
         orphans: unmatchedLayers().map(ref),
+        ambiguous: stillAmbiguous.length ? stillAmbiguous.map(item => ({ ...ref(item.layer), rows: item.rows })) : undefined,
         languages: languageNeeds(),
         rememberedInBrandProfile: rememberedIn === 'profilo brand' ? saved : 0,
         rememberedIn
@@ -602,6 +630,10 @@ export function createMcpServer(deps: {
       const frames = session.selection;
       if (!frames || !session.match) throw new Error('Esegui prima match_selection');
       if (!session.accepted.size) throw new Error('Nessun livello abbinato: controlla Colonna sorgente e frame selezionati');
+      const unresolved = pendingAmbiguous();
+      if (unresolved.length) {
+        throw new Error(`Abbinamenti ambigui da risolvere prima di generare (confirm_matches assign): ${unresolved.map(item => `${item.layer.frame} / ${item.layer.key} → righe ${item.rows.join(', ')}`).join('; ')}`);
+      }
       const primary = excel.primary;
       const targets = [...new Set([primary, ...(languages ?? languageNeeds().needed).map(normalizeLanguage)])];
       if (targets.length === 1) throw new Error('Nessuna traduzione nelle righe usate dai frame: controlla le colonne lingua o passa languages');
@@ -720,17 +752,19 @@ export function createMcpServer(deps: {
       const excel = requireExcel();
       if (excel.inline) throw new Error('Le traduzioni vengono dalla chat (load_translations): non c\'è un Excel cliente da aggiornare');
       const figma = session.generated ? await snapshot(session.generated.frameIds) : [];
+      const usedRowSet = new Set([...session.accepted.values()].map(item => item.row));
       const plan = planUpdates({
         rows: excel.rows, languageColumns: excel.languageColumns, primary: excel.primary, sourceColumn: excel.sourceColumn,
         matches: [...session.accepted.values()], orphans: add_orphans ? unmatchedLayers() : [],
-        generated: session.generated?.rows ?? [], figma, ai: [...session.ai.values()],
+        // Solo le Traduzioni AI di righe ancora usate dai frame: un abbinamento cambiato dopo il salvataggio le lascia indietro.
+        generated: session.generated?.rows ?? [], figma, ai: [...session.ai.values()].filter(item => usedRowSet.has(item.row)),
         overwrite: (overwrite ?? []).map(item => ({ row: item.row, language: normalizeLanguage(item.language) })), lastRow: excel.lastRow
       });
       const output = output_path ?? defaultOutputPath(excel.original);
       const usedRows = [...new Set([...session.accepted.values()].map(item => item.row))];
-      const { removedRows } = await writeUpdatedWorkbook({
+      const { removedRows, copyNotes } = await writeUpdatedWorkbook({
         input: excel.path, output, sheet: excel.sheet, plan, idColumn: excel.idColumn,
-        keepRows: only_used_rows === false ? undefined : usedRows, headerRow: excel.headerRow,
+        keepRows: only_used_rows === false ? undefined : usedRows, headerRow: excel.headerRow, appendAfter: excel.lastRow,
         // si rigenera solo una copia scritta da noi (in questa sessione o riconosciuta dal marcatore), mai un altro file
         allowOverwrite: session.writtenOutputs.has(resolve(output)) || await isGeneratedCopy(output)
       });
@@ -740,7 +774,20 @@ export function createMcpServer(deps: {
         output,
         rows: { kept: usedRows.length, removed: removedRows, onlyUsedRows: only_used_rows !== false,
           note: removedRows ? 'Le righe sono state rinumerate nella copia; i numeri nella lista "written" sono quelli dell\'Excel originale.' : undefined },
+        copyWarning: copyNotes ? {
+          formulaCells: copyNotes.formulaCells.length ? copyNotes.formulaCells : undefined,
+          reducedMerges: copyNotes.reducedMerges.length ? copyNotes.reducedMerges : undefined,
+          conditionalFormatting: copyNotes.conditionalFormatting || undefined,
+          message: [
+            copyNotes.formulaCells.length ? `${copyNotes.formulaCells.length} celle con formula (indirizzi nella copia): i riferimenti puntano ancora alle righe dell'Excel originale` : '',
+            copyNotes.reducedMerges.length ? `${copyNotes.reducedMerges.length} celle unite attraversavano righe tolte: restano unite solo sulle righe tenute` : '',
+            copyNotes.conditionalFormatting ? 'le formattazioni condizionali restano sugli intervalli originali' : ''
+          ].filter(Boolean).join('; ').replace(/^./, char => char.toUpperCase()) + '. Dillo al designer e proponi di rifare la copia completa con only_used_rows: false.'
+        } : undefined,
         orphansNotAdded: notAdded.length ? notAdded.map(ref) : undefined,
+        ambiguousNotWritten: pendingAmbiguous().length
+          ? pendingAmbiguous().map(item => ({ ...ref(item.layer), rows: item.rows }))
+          : undefined,
         written: plan.writes.map(item => ({ row: item.row, column: columnLetter(item.column), language: item.language, source: item.source, text: item.text })),
         addedRows: plan.newRows.map(item => ({ row: item.row, id: item.id })),
         conflicts: plan.conflicts,
@@ -907,6 +954,27 @@ export function createMcpServer(deps: {
   );
 
   return server;
+}
+
+// Il percorso arriva dall'agente, che legge anche i testi dell'Excel cliente: un Excel preparato ad arte potrebbe
+// convincerlo a sovrascrivere un file qualunque. Si scrive solo un .json in una cartella esistente, e sopra un file
+// già presente solo se è a sua volta un profilo esportato.
+export async function safeExportPath(requested: string): Promise<string> {
+  const path = resolve(expandHome(requested.trim()));
+  // .brand.json, come i file scaricati dal plugin: un .json qualunque (impostazioni, configurazioni) non si può creare.
+  if (!path.toLowerCase().endsWith('.brand.json')) throw new Error(`Il file del profilo deve finire con .brand.json: ${requested}`);
+  try { if (!(await stat(dirname(path))).isDirectory()) throw new Error(); }
+  catch { throw new Error(`Cartella di destinazione non trovata: ${dirname(path)}`); }
+  let existing: string;
+  try { existing = await readFile(path, 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path;
+    throw new Error(`${path} esiste già e non si può leggere: scegli un altro nome`);
+  }
+  let format: unknown;
+  try { format = (JSON.parse(existing) as { format?: unknown }).format; } catch { /* non è JSON */ }
+  if (format !== EXPORT_FORMAT) throw new Error(`${path} esiste già e non è un profilo esportato: scegli un altro nome`);
+  return path;
 }
 
 // Differenze informative tra il profilo e l'Excel analizzato: vale sempre l'Excel.
