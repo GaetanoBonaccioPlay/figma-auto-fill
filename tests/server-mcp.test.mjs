@@ -10,6 +10,7 @@ import { WebSocket } from 'ws';
 import { Archive, runProfileAction, validateProfile } from '../dist/profiles.mjs';
 import { Bridge } from '../dist/server/bridge.mjs';
 import { createMcpServer, todayStamp } from '../dist/server/tools.mjs';
+import { WorkingCopies } from '../dist/server/excel-locate.mjs';
 import { readCells, tempDir, writeFixture } from './helpers/xlsx.mjs';
 
 const hash = async path => createHash('sha256').update(await readFile(path)).digest('hex');
@@ -73,11 +74,11 @@ function fakePlugin(bridge, current, archive) {
 
 const waitConnected = async bridge => { for (let i = 0; i < 100 && !bridge.connected; i++) await new Promise(resolve => setTimeout(resolve, 10)); };
 
-async function setup({ plugin = true, bases = [] } = {}) {
+async function setup({ plugin = true, bases = [], searchRoots, copies } = {}) {
   const { dir, cleanup } = await tempDir();
   const bridge = new Bridge({ port: 0 });
   await bridge.start();
-  const server = createMcpServer({ bridge, now: () => new Date(2026, 10, 9) });
+  const server = createMcpServer({ bridge, now: () => new Date(2026, 10, 9), excelSearchRoots: searchRoots?.(dir) ?? [join(dir, 'nessuna-cartella')], workingCopies: copies?.(dir) });
   const client = new Client({ name: 'test', version: '1.0.0' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);
@@ -103,7 +104,7 @@ test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine 
   try {
     const tools = (await env.client.listTools()).tools.map(tool => tool.name);
     for (const name of ['bridge_status', 'get_selection', 'list_brand_profiles', 'get_brand_profile', 'save_brand_profile', 'export_brand_profile',
-      'import_brand_profile', 'analyze_client_excel', 'match_selection', 'confirm_matches', 'generate_exports', 'write_updated_excel',
+      'import_brand_profile', 'analyze_client_excel', 'load_translations', 'match_selection', 'confirm_matches', 'generate_exports', 'write_updated_excel',
       'list_empty_cells', 'save_ai_translations', 'clear_brand', 'pending_profile_updates', 'apply_profile_updates']) assert.ok(tools.includes(name), name);
     const prompts = (await env.client.listPrompts()).prompts;
     assert.deepEqual(prompts.map(prompt => prompt.name), ['localizza-frame']);
@@ -115,6 +116,102 @@ test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine 
     assert.match(text, /SOLO se il designer vuole/);
     assert.match(text, /incongruenza.*NON decidere da solo.*fai una domanda/s);
     assert.match(text, /senza Brand/);
+  } finally { await env.close(); }
+});
+
+test('Excel allegato alla chat: il server lo trova sul Mac dal nome del file, anche con il percorso cloud', async () => {
+  const env = await setup({ plugin: false, searchRoots: dir => [join(dir, 'Downloads'), join(dir, 'Desktop')] });
+  try {
+    await mkdir(join(env.dir, 'Downloads', 'campagna'), { recursive: true });
+    await mkdir(join(env.dir, 'Desktop'), { recursive: true });
+    const rows = [{ name: 'S', rows: [['Italiano'], ['a']] }];
+    const excel = await writeFixture(join(env.dir, 'Downloads', 'campagna', 'Columbia FW26.xlsx'), rows);
+    const byName = await env.call('analyze_client_excel', { file_name: 'Columbia FW26.xlsx' });
+    assert.equal(byName.isError, false, byName.text);
+    assert.equal(byName.data.path, excel);
+    const cloud = await env.call('analyze_client_excel', { path: '/mnt/user-data/uploads/Columbia FW26.xlsx' });
+    assert.equal(cloud.isError, false, cloud.text);
+    assert.equal(cloud.data.path, excel);
+    const missing = await env.call('analyze_client_excel', { file_name: 'Altro.xlsx' });
+    assert.equal(missing.isError, true);
+    assert.match(missing.text, /non è sul Mac.*percorso completo/s);
+    await writeFixture(join(env.dir, 'Desktop', 'Columbia FW26 (1).xlsx'), rows);
+    const twice = await env.call('analyze_client_excel', { file_name: 'Columbia FW26.xlsx' });
+    assert.equal(twice.isError, true);
+    assert.match(twice.text, /Più file.*Desktop.*campagna|Più file.*campagna.*Desktop/s);
+  } finally { await env.close(); }
+});
+
+test('l\'Excel si analizza da una copia temporanea in excel-clienti/, che sparisce a fine sessione; la copia aggiornata va accanto all\'originale', async () => {
+  let copies;
+  const env = await setup({ searchRoots: dir => [join(dir, 'Downloads')], copies: dir => (copies = new WorkingCopies(join(dir, 'excel-clienti'), 4242)) });
+  try {
+    await mkdir(join(env.dir, 'Downloads'), { recursive: true });
+    await mkdir(join(env.dir, 'excel-clienti', 'temp-999999'), { recursive: true }); // avanzo di una sessione morta
+    const mine = await writeFixture(join(env.dir, 'excel-clienti', 'mio.xlsx'), [{ name: 'S', rows: [['EN'], ['x']] }]);
+    const original = await writeFixture(join(env.dir, 'Downloads', 'Cliente.xlsx'), [{ name: 'Testi', rows: [
+      ['ID', 'EN', 'IT', 'DE'],
+      ['h1', 'Discover the new collection', 'Scopri la nuova collezione', 'Entdecke die neue Kollektion'],
+      ['c1', 'Shop now', 'Acquista ora', '']
+    ] }]);
+    const before = await hash(original);
+    await copies.cleanStale();
+    assert.equal(existsSync(join(env.dir, 'excel-clienti', 'temp-999999')), false, 'avanzi eliminati');
+    assert.equal(existsSync(mine), true, 'i file del designer restano');
+
+    const analysis = await env.call('analyze_client_excel', { file_name: 'Cliente.xlsx' });
+    assert.equal(analysis.isError, false, analysis.text);
+    const copy = join(env.dir, 'excel-clienti', 'temp-4242', 'Cliente.xlsx');
+    assert.equal(analysis.data.path, original);
+    assert.equal(analysis.data.workingCopy.path, copy);
+    assert.equal(await hash(copy), before);
+
+    await env.call('match_selection');
+    const written = await env.call('write_updated_excel');
+    assert.equal(written.isError, false, written.text);
+    assert.equal(written.data.output, join(env.dir, 'Downloads', 'Cliente_updated.xlsx'));
+    assert.equal(await hash(original), before, 'l\'originale non cambia');
+
+    copies.releaseAll();
+    assert.equal(existsSync(join(env.dir, 'excel-clienti', 'temp-4242')), false);
+    assert.equal(existsSync(mine), true);
+    assert.equal(existsSync(written.data.output), true, 'la copia aggiornata resta');
+  } finally { await env.close(); }
+});
+
+test('traduzioni dalla chat o da un allegato: arrivano al plugin senza Excel sul Mac, e niente Excel aggiornato', async () => {
+  const env = await setup();
+  const state = { existing: [], exports: {} };
+  try {
+    await env.connectPlugin(state);
+    assert.match((await env.call('load_translations', { table: [['Testo', 'Note'], ['ciao', '']] })).text, /Nessuna colonna lingua/);
+    const loaded = (await env.call('load_translations', {
+      source_name: 'brief.pdf',
+      table: [
+        ['ID', 'IT', 'EN', 'de', 'Note'],
+        ['H1', 'Scopri la nuova collezione', 'Discover the new collection', 'Entdecke die neue Kollektion', 'titolo'],
+        ['C1', 'Acquista ora', 'Shop now', null, ''],
+        ['L1', 'Termini applicabili', 'Terms apply', 'Es gelten die AGB']
+      ]
+    })).data;
+    assert.equal(loaded.source, 'brief.pdf');
+    assert.deepEqual(loaded.analysis.languageColumns.map(item => `${item.letter}:${item.code}`), ['B:IT', 'C:EN', 'D:DE']);
+    assert.equal(loaded.analysis.idColumn, 1);
+    assert.equal(loaded.brand.decision, 'no-brand');
+
+    const match = (await env.call('match_selection')).data;
+    assert.deepEqual([match.summary.exact, match.summary.orphans], [3, 0]);
+    assert.equal(match.sourceChoice.language, 'IT');
+    assert.deepEqual(match.languages.needed, ['IT', 'EN', 'DE']);
+    const done = (await env.call('generate_exports', { section_mode: 'none' })).data;
+    assert.equal(done.status, 'done');
+    assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE']);
+    assert.equal(state.generated.rows.find(row => row.key === 'cta').values.EN, 'Shop now');
+
+    assert.match((await env.call('write_updated_excel')).text, /dalla chat/);
+    assert.equal((await env.call('list_empty_cells')).data.count, 1, 'la Traduzione AI resta disponibile');
+    assert.equal((await env.call('pending_profile_updates')).data.mode, 'none');
+    assert.deepEqual(await readdir(env.dir), [], 'nessun file scritto sul Mac');
   } finally { await env.close(); }
 });
 
@@ -187,17 +284,23 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.equal(confirm.matched, 2);
 
     // 5. Generazione: prima conflitto, poi sostituzione
-    const conflict = (await env.call('generate_exports')).data;
+    // prima di esportare l'agente chiede le impostazioni: qui solo la section (IT, EN, DE non hanno paese)
+    const settings = (await env.call('generate_exports')).data;
+    assert.equal(settings.status, 'confirm-settings');
+    assert.deepEqual(settings.questions.map(item => item.param), ['section_mode']);
+    assert.equal(settings.questions[0].options.find(option => option.recommended).value, 'locale', 'consigliata quella del profilo');
+    assert.equal(state.generated, undefined, 'nessuna generazione prima delle risposte');
+    const conflict = (await env.call('generate_exports', { section_mode: 'locale' })).data;
     assert.equal(conflict.status, 'conflict');
     assert.deepEqual(conflict.existing, [{ name: 'Hero_EN', language: 'EN' }]);
     assert.equal(state.generated, undefined, 'nessuna generazione senza scelta');
-    const done = (await env.call('generate_exports', { on_conflict: 'replace' })).data;
+    const done = (await env.call('generate_exports', { on_conflict: 'replace', section_mode: 'locale' })).data;
     assert.equal(done.status, 'done');
     assert.equal(done.fallbackCells, 1);
     assert.equal(state.generated.collisionMode, 'replace');
     assert.deepEqual(state.generated.confirmedReplacementIds, ['9:1']);
     assert.equal(state.generated.sectionMode, 'locale');
-    assert.deepEqual(state.generated.naming, { template: '{Nome}-{Lingua}', start: 1, date: todayStamp(new Date(2026, 10, 9)) });
+    assert.deepEqual(state.generated.naming, { template: '{Nome}-{Lingua}', start: 1, date: todayStamp(new Date(2026, 10, 9)), shortLanguages: [] });
     assert.equal(todayStamp(new Date(2026, 10, 9)), '261109');
     assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE']);
     assert.deepEqual(state.generated.rows.map(row => [row.key, row.translate]), [['headline', true], ['cta', true], ['legal', false]]);
@@ -248,7 +351,7 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.match((await env.call('save_ai_translations', { translations: [{ row: 2, language: 'IT', text: 'x' }] })).text, /non traducibile/);
     assert.equal((await env.call('save_ai_translations', { translations: [{ row: 2, language: 'FR', text: 'Découvrez la nouvelle collection' }] })).data.saved, 1);
     assert.equal((await env.call('list_empty_cells')).data.count, 2);
-    await env.call('generate_exports', { on_conflict: 'replace' }); // rigenera: le correzioni manuali vengono perse nel finto, come in un nuovo export
+    await env.call('generate_exports', { on_conflict: 'replace', section_mode: 'locale' }); // rigenera: le correzioni manuali vengono perse nel finto, come in un nuovo export
     state.manual = { cta: { DE: 'Jetzt kaufen' } };
     state.exports = exportsFrom(state.generated, state.manual);
     assert.deepEqual(state.generated.targets, ['IT', 'EN', 'DE', 'FR'], 'con una Traduzione AI anche FR diventa necessaria');
@@ -336,20 +439,23 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
     FRAME.textLayers = frameWithCta.textLayers;
     try {
       await env.call('match_selection');
-      const done = (await env.call('generate_exports')).data;
+      const ask = (await env.call('generate_exports')).data;
+      assert.equal(ask.status, 'confirm-settings');
+      assert.equal(ask.questions[0].options.find(option => option.recommended).value, 'base', 'consigliata la section scelta nel plugin');
+      const done = (await env.call('generate_exports', { section_mode: 'base' })).data;
       assert.equal(done.status, 'done');
-      assert.deepEqual(state.generated.naming, { template: '{Data}_{Nome}-{Lingua}-{Paese}', start: 3, date: '261109' });
+      assert.deepEqual(state.generated.naming, { template: '{Data}_{Nome}-{Lingua}-{Paese}', start: 3, date: '261109', shortLanguages: [] });
       assert.deepEqual(state.generated.baseNames, { '1:1': 'Hero' });
       assert.equal(state.generated.sectionMode, 'base');
-      assert.deepEqual(done.usedSettings, { source: 'plugin', nameTemplate: '{Data}_{Nome}-{Lingua}-{Paese}', baseNames: { '1:1': 'Hero' }, sectionMode: 'base' });
+      assert.deepEqual(done.usedSettings, { source: 'plugin', nameTemplate: '{Data}_{Nome}-{Lingua}-{Paese}', languageSuffix: 'lang', baseNames: { '1:1': 'Hero' }, sectionMode: 'base' });
 
       // lingue del plugin diverse da quelle dell'Excel: nessuna generazione finché il designer non sceglie
       state.ui.targets = ['EN', 'DE'];
       state.generated = null;
-      const ask = (await env.call('generate_exports')).data;
-      assert.equal(ask.status, 'confirm-languages');
-      assert.deepEqual(ask.pluginLanguages, ['EN', 'DE']);
-      assert.deepEqual(ask.neededLanguages, ['EN', 'FR', 'DE']);
+      const askLanguages = (await env.call('generate_exports')).data;
+      assert.equal(askLanguages.status, 'confirm-languages');
+      assert.deepEqual(askLanguages.pluginLanguages, ['EN', 'DE']);
+      assert.deepEqual(askLanguages.neededLanguages, ['EN', 'FR', 'DE']);
       assert.equal(state.generated, null, 'nessun export generato prima della risposta');
       const chosen = (await env.call('generate_exports', { languages: ['EN', 'DE'], section_mode: 'locale' })).data;
       assert.equal(chosen.status, 'done');
@@ -358,7 +464,9 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
       state.ui.targets = ['EN', 'DE', 'FR'];
 
       state.ui = null; // plugin senza stato UI: si ripiega sul profilo brand
-      const fallback = (await env.call('generate_exports')).data;
+      const askFallback = (await env.call('generate_exports')).data;
+      assert.equal(askFallback.questions[0].options.find(option => option.recommended).value, 'none', 'senza stato UI consigliata la section del profilo');
+      const fallback = (await env.call('generate_exports', { section_mode: 'none' })).data;
       assert.equal(fallback.usedSettings.source, 'profilo brand');
       assert.equal(state.generated.naming.template, '{Nome}');
       assert.deepEqual(state.generated.baseNames, { '1:1': 'Hero' }, 'senza stato UI vale il nome base del frame');
@@ -394,10 +502,10 @@ test('lingue: servono solo quelle con traduzioni nelle righe usate dai frame, no
       assert.deepEqual(match.languages.needed, ['EN', 'FR', 'DE']);
       assert.deepEqual(match.languages.notNeeded, ['FR_CH', 'NL']);
       assert.deepEqual(match.languages.coverage.FR, { filled: 1, of: 2, missingRows: [3] });
-      await env.call('generate_exports');
+      await env.call('generate_exports', { section_mode: 'none' });
       assert.deepEqual(state.generated.targets, ['EN', 'FR', 'DE'], 'il disclaimer non porta FR_CH e NL negli export');
       // il designer può comunque chiederle in modo esplicito
-      await env.call('generate_exports', { languages: ['FR', 'NL'] });
+      await env.call('generate_exports', { languages: ['FR', 'NL'], section_mode: 'none' });
       assert.deepEqual(state.generated.targets, ['EN', 'FR', 'NL']);
     } finally { FRAME.textLayers = original; }
   } finally { await env.close(); }
@@ -466,7 +574,7 @@ test('l\'Excel originale non viene mai modificato, in nessun passo del dialogo n
     await env.connectPlugin(state);
     await env.call('match_selection'); await stillUntouched('match_selection');
     await env.call('confirm_matches', { accept_similar: 'all' }); await stillUntouched('confirm_matches');
-    await env.call('generate_exports'); await stillUntouched('generate_exports');
+    await env.call('generate_exports', { section_mode: 'none' }); await stillUntouched('generate_exports');
     await env.call('list_empty_cells'); await stillUntouched('list_empty_cells');
     await env.call('save_ai_translations', { translations: [{ row: 2, language: 'DE', text: 'Entdecke die neue Kollektion' }] });
     await stillUntouched('save_ai_translations');
@@ -532,7 +640,7 @@ test('senza Brand: flusso completo fino all\'Excel aggiornato, fatti imparati ne
     const excluded = (await env.call('exclude_layers', { add: ['To:'] })).data;
     assert.equal(excluded.savedIn, 'sessione');
     assert.equal((await env.call('match_selection')).data.summary.excluded, 1, 'l\'esclusione vale per la sessione');
-    const done = (await env.call('generate_exports')).data;
+    const done = (await env.call('generate_exports', { section_mode: 'none' })).data;
     assert.equal(done.status, 'done');
     assert.equal(done.usedSettings.source, 'default');
     assert.equal((await env.call('write_updated_excel')).isError, false);
@@ -577,7 +685,7 @@ test('Colonna sorgente dai dati: l\'Excel vince sulla lingua principale del prof
     assert.deepEqual([match.sourceChoice.column, match.sourceChoice.language, match.sourceChoice.differsFromProfile], ['B', 'DE', true]);
     assert.ok(match.warnings.some(item => /diversa dalla lingua principale del profilo \(EN\)/.test(item)));
     assert.equal(match.summary.exact, 1);
-    await env.call('generate_exports');
+    await env.call('generate_exports', { language_suffix: 'lang', section_mode: 'none' });
     const pending = (await env.call('pending_profile_updates')).data;
     assert.equal(pending.mode, 'update');
     assert.deepEqual(pending.changes.newLanguages, ['PT_BR']);
@@ -636,7 +744,7 @@ test('Profilo di base: fatti imparati e novità confermate diventano Aggiunte pe
     assert.equal((await env.call('exclude_layers', { add: ['Legal footer'] })).data.savedIn, 'profilo brand');
     assert.deepEqual(env.archive.additions('Columbia').ignoredLayers, ['Legal footer'], 'fatto imparato salvato subito come aggiunta');
     await env.call('match_selection');
-    const done = (await env.call('generate_exports', { languages: ['PT_BR'] })).data;
+    const done = (await env.call('generate_exports', { languages: ['PT_BR'], language_suffix: 'lang', section_mode: 'none' })).data;
     assert.match(done.profileSuggestion, /nome di output \{Nome\}_\{Lingua\}/);
 
     const pending = (await env.call('pending_profile_updates')).data;
@@ -726,8 +834,44 @@ test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT 
     assert.deepEqual(manual.columns.languages, { EN: 'A', FR: 'H' });
     assert.equal(manual.profileMapping, undefined);
     await env.call('match_selection');
-    await env.call('generate_exports', { languages: ['FR_BE', 'DE_AT'] });
+    await env.call('generate_exports', { languages: ['FR_BE', 'DE_AT'], language_suffix: 'lang-country', section_mode: 'none' });
     // FR_BE e DE_AT sono varianti di lingue che Columbia ha già: nessuna "lingua nuova" da ricordare
     assert.deepEqual((await env.call('pending_profile_updates')).data.changes?.newLanguages ?? [], []);
+  } finally { await env.close(); }
+});
+
+test('prima di esportare chiede suffisso e section; con Lang il paese resta solo se la lingua ha più varianti', async () => {
+  const env = await setup();
+  const state = { existing: [], exports: {} };
+  try {
+    const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['EN-GB', 'FR-FR', 'DE-DE', 'DE-AT'], ['Shop now', 'Commander', 'Bestellen', 'Bestellen jetzt']] }]);
+    await env.call('analyze_client_excel', { path: excel });
+    await env.connectPlugin(state);
+    const original = FRAME.textLayers;
+    FRAME.textLayers = [{ id: 'a', key: 'cta', text: 'Shop now', markup: 'Shop now' }];
+    try {
+      await env.call('match_selection');
+      const ask = (await env.call('generate_exports')).data;
+      assert.equal(ask.status, 'confirm-settings');
+      assert.equal(state.generated, undefined, 'nessun export prima delle risposte');
+      const [suffix, sections] = ask.questions;
+      assert.equal(suffix.param, 'language_suffix');
+      assert.deepEqual(suffix.options.map(option => option.example), [
+        ['Hero_EN', 'Hero_FR', 'Hero_DE_DE', 'Hero_DE_AT'],
+        ['Hero_EN_GB', 'Hero_FR_FR', 'Hero_DE_DE', 'Hero_DE_AT']
+      ]);
+      assert.match(suffix.options[0].note, /DE_DE, DE_AT restano con il paese/);
+      assert.deepEqual(sections.options.map(option => [option.label, option.value]), [
+        ['Sì, divise per country', 'locale'], ['Sì, divise per lang', 'base'], ['No', 'none']
+      ]);
+      assert.deepEqual(sections.options[1].example, ['en/', 'fr/', 'de/']);
+
+      const done = (await env.call('generate_exports', { language_suffix: 'lang', section_mode: 'base' })).data;
+      assert.equal(done.status, 'done');
+      assert.deepEqual(state.generated.naming.shortLanguages, ['EN_GB', 'FR_FR']);
+      assert.equal(state.generated.sectionMode, 'base');
+      await env.call('generate_exports', { language_suffix: 'lang-country', section_mode: 'none', on_conflict: 'version' });
+      assert.deepEqual(state.generated.naming.shortLanguages, []);
+    } finally { FRAME.textLayers = original; }
   } finally { await env.close(); }
 });

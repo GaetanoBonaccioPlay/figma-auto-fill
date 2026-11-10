@@ -143,7 +143,18 @@ export function isValidDate(date: string): boolean {
   return parsed.getUTCFullYear() === 2000 + yy && parsed.getUTCMonth() === mm - 1 && parsed.getUTCDate() === dd;
 }
 
-export type NamingOptions = { template: string; start: number; date: string };
+// shortLanguages: codici lingua-paese da scrivere senza paese nel nome (EN_GB → EN), vedi shortLanguages().
+export type NamingOptions = { template: string; start: number; date: string; shortLanguages?: string[] };
+export type LanguageSuffix = 'lang' | 'lang-country';
+
+// Con il suffisso Lang il paese si toglie solo dove non serve a distinguere: EN_GB da solo diventa EN,
+// mentre EN_GB ed EN_US (o EN ed EN_GB) generati insieme restano interi per non dare lo stesso nome.
+export function shortLanguages(targets: string[], suffix: LanguageSuffix): string[] {
+  if (suffix !== 'lang') return [];
+  const codes = [...new Set(targets.map(normalizeLanguage))];
+  const count = (lang: string) => codes.filter(code => code.split('_')[0] === lang).length;
+  return codes.filter(code => code.includes('_') && count(code.split('_')[0]) === 1);
+}
 export type NameContext = { name: string; index: number; count: number; width: number; height: number };
 export const DEFAULT_NAME_TEMPLATE = '{Nome}';
 export const DEFAULT_NAMING: NamingOptions = { template: DEFAULT_NAME_TEMPLATE, start: 1, date: '' };
@@ -159,23 +170,19 @@ export const NAME_TOKENS = [
 
 const TOKEN_PATTERN = /\{([^{}]*)\}/g;
 const SEPARATOR = /[-_. ]$/;
-const COMMON_RATIOS: Array<[number, number]> = [
-  [1, 1], [4, 5], [5, 4], [2, 3], [3, 2], [3, 4], [4, 3], [9, 16], [16, 9], [1, 2], [2, 1], [21, 9], [9, 21], [1.91, 1], [1, 1.91]
-];
-
 function gcd(a: number, b: number): number {
   return b ? gcd(b, a % b) : a;
 }
 
+// {Ratio}: la proporzione ridotta ai minimi termini (1200×1200 → 1x1, 1080×1350 → 4x5).
+// Se non si riduce a una proporzione corta di interi restano i pixel del frame (1200×628 → 1200x628), mai approssimazioni.
 export function aspectRatio(width: number, height: number): string {
   const w = Math.round(width);
   const h = Math.round(height);
   if (w <= 0 || h <= 0) return '';
   const divisor = gcd(w, h);
-  if (w / divisor <= 32 && h / divisor <= 32) return `${w / divisor}×${h / divisor}`;
-  const ratio = w / h;
-  const near = COMMON_RATIOS.find(([a, b]) => Math.abs(a / b - ratio) / ratio < 0.02);
-  return near ? `${near[0]}×${near[1]}` : `${w}×${h}`;
+  const [a, b] = [w / divisor, h / divisor];
+  return a <= 32 && b <= 32 ? `${a}x${b}` : `${w}x${h}`;
 }
 
 function templateTokens(template: string): string[] {
@@ -186,7 +193,8 @@ function templateTokens(template: string): string[] {
 // also used; without either, `_<code>` is appended so languages never collide.
 // An empty value also drops the separator just before it (Hero-en-{Paese} → Hero-en).
 export function renderOutputName(context: NameContext, language: string, naming: NamingOptions, version = 1): string {
-  const code = normalizeLanguage(language);
+  const full = normalizeLanguage(language);
+  const code = naming.shortLanguages?.map(normalizeLanguage).includes(full) ? full.split('_')[0] : full;
   const [lang, country = ''] = code.split('_');
   const tokens = templateTokens(naming.template);
   const usesDate = tokens.includes('data');

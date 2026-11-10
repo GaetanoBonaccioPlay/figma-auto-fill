@@ -1,6 +1,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BRIDGE_PORT } from '../src/agent-protocol';
 import { Bridge } from './bridge';
+import { WorkingCopies, defaultExcelDir } from './excel-locate';
 import { createMcpServer } from './tools';
 
 // Su stdio stdout è riservato al protocollo MCP: i log vanno su stderr.
@@ -14,7 +15,12 @@ async function main(): Promise<void> {
   log(bridge.startError ?? `bridge in ascolto su ws://localhost:${port}`);
   log('profili brand: archivio del plugin (via bridge)');
 
-  const server = createMcpServer({ bridge });
+  const workingCopies = new WorkingCopies(process.env.FIGMA_AUTOFILL_EXCEL_DIR || defaultExcelDir());
+  await workingCopies.cleanStale();
+  process.on('exit', () => workingCopies.releaseAll());
+  log(`copie temporanee degli Excel in ${workingCopies.dir}`);
+
+  const server = createMcpServer({ bridge, workingCopies });
   await server.connect(new StdioServerTransport());
 
   // Il processo deve uscire davvero quando il client chiude: se restasse appeso terrebbe la porta.

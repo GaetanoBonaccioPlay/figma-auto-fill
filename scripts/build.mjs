@@ -81,7 +81,7 @@ await build({
 await build({
   entryPoints: {
     index: 'server/index.ts', tools: 'server/tools.ts', bridge: 'server/bridge.ts', brands: 'server/brands.ts',
-    'excel-analyze': 'server/excel-analyze.ts', 'excel-update': 'server/excel-update.ts', match: 'server/match.ts'
+    'excel-analyze': 'server/excel-analyze.ts', 'excel-update': 'server/excel-update.ts', match: 'server/match.ts', 'excel-locate': 'server/excel-locate.ts'
   },
   outdir: 'dist/server',
   outExtension: { '.js': '.mjs' },

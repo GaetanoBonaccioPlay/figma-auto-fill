@@ -2,7 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import { frameLabel, normalizeLanguage, validateRows, type FrameInfo, type TranslationRow } from '../src/core';
+import {
+  frameLabel, normalizeLanguage, renderOutputName, shortLanguages, validateRows,
+  type FrameInfo, type LanguageSuffix, type NamingOptions, type TranslationRow
+} from '../src/core';
 import type { UiState } from '../src/agent-protocol';
 import {
   closestModelIndex, extractExcelModel, mappingFromProfile, modelSimilarity, profileNaming, recognize, validateProfile,
@@ -13,6 +16,7 @@ import type { PluginLink } from './bridge';
 import {
   analyzeWorkbook, columnLetter, columnNumber, readSheets, type AnalysisReport, type SheetData
 } from './excel-analyze';
+import { DEFAULT_SEARCH_ROOTS, resolveExcelPath, type WorkingCopies } from './excel-locate';
 import {
   cellToMarkup, defaultOutputPath, isGeneratedCopy, planUpdates, writeUpdatedWorkbook
 } from './excel-update';
@@ -22,7 +26,9 @@ import {
 } from './match';
 
 type ExcelConfig = {
-  path: string; sheet: string; headerRow: number; idColumn?: number; sourceColumn: number; primary: string;
+  // path: il file letto (la copia di lavoro, se c'è); original: il file del designer, accanto a cui va la copia aggiornata.
+  // inline: traduzioni passate dalla chat o da un allegato letto dall'agente, senza file sul Mac: niente Excel aggiornato.
+  path: string; original: string; inline: boolean; sheet: string; headerRow: number; idColumn?: number; sourceColumn: number; primary: string;
   languageColumns: Record<string, number>; rows: ExcelRow[]; lastRow: number;
 };
 type Session = {
@@ -31,6 +37,9 @@ type Session = {
   // Senza Brand, Livelli esclusi e Abbinamenti confermati valgono per la sessione (e finiscono nel profilo se lo si salva).
   scratch: { ignoredLayers: string[]; confirmedMatches: ConfirmedMatch[] };
   analysis: AnalysisReport | null;
+  original: string | null;
+  // Tabella delle traduzioni arrivate dalla chat (load_translations): sostituisce la lettura del file.
+  inlineSheet: SheetData | null;
   sheetRows: string[][];
   model: ExcelModel | null;
   recognition: Recognition | null;
@@ -47,7 +56,7 @@ type Session = {
 
 const newSession = (): Session => ({
   brand: null, brandOrigin: null, scratch: { ignoredLayers: [], confirmedMatches: [] },
-  analysis: null, sheetRows: [], model: null, recognition: null, usedSettings: null, excel: null, selection: null, layers: [], match: null,
+  analysis: null, original: null, inlineSheet: null, sheetRows: [], model: null, recognition: null, usedSettings: null, excel: null, selection: null, layers: [], match: null,
   accepted: new Map(), generated: null, ai: new Map(), writtenOutputs: new Set()
 });
 
@@ -58,14 +67,17 @@ export function todayStamp(now = new Date()): string {
 export const WORKFLOW = `Segui questi passi, uno alla volta, chiedendo conferma al designer dove indicato.
 REGOLA GENERALE: davanti a un'incongruenza (lingue del plugin diverse da quelle dell'Excel, testi o traduzioni mancanti, nomi o impostazioni che non tornano, risposte "conflict" o "confirm-languages") NON decidere da solo e non andare avanti: fai una domanda breve al designer, con una proposta consigliata, e agisci solo dopo la risposta.
 Il Brand è un aiuto, non un vincolo: si può lavorare senza Brand e quando c'è il suo Profilo brand suggerisce, ma vale sempre l'Excel che hai davanti.
-1. EXCEL CLIENTE — chiedi il percorso dell'Excel e chiama analyze_client_excel (se il designer nomina un Brand passalo in brand). Mostra foglio, colonne lingua trovate (intestazione → codice) e chiedi conferma o correzioni della mappatura. NON chiedere ancora quali lingue generare: dipende dalle righe usate dai frame (passo 4).
+1. TRADUZIONI (EXCEL CLIENTE o chat) — chiedi da dove vengono le traduzioni; l'Excel sul Mac è facoltativo.
+   - Testi scritti in chat o file allegato (Excel, CSV, PDF, Word, immagine...): leggili tu e passali a load_translations come tabella (prima riga: codici lingua come IT, EN, EN_GB e, se c'è, una colonna ID; poi una riga per testo). Non cercare il file sul Mac e non chiedere percorsi. Con questi dati non c'è Excel aggiornato: il passo 6 si salta.
+   - Excel sul Mac del designer (indica un percorso): chiama analyze_client_excel con path. Se nomina solo il file, passalo in file_name e il server lo cerca in Download, Scrivania e Documenti; se non lo trova o ne trova più di uno, chiedi il percorso completo.
+   In entrambi i casi, se il designer nomina un Brand passalo in brand. Mostra foglio, colonne lingua trovate (intestazione → codice) e chiedi conferma o correzioni della mappatura. NON chiedere ancora quali lingue generare: dipende dalle righe usate dai frame (passo 4).
 2. BRAND — leggi il blocco "brand" della risposta e segui "brand.next": con un candidato chiaro proponilo e chiedi conferma; con più candidati elencali e fai scegliere; se il profilo selezionato nel plugin è diverso dal Brand riconosciuto fai notare la differenza e chiedi quale usare; se non c'è nessun candidato dillo in una riga e prosegui senza Brand. Seleziona il Brand scelto con get_brand_profile. Le differenze tra Excel e profilo (profileDifferences) sono solo informative: riportale in una riga, non chiedere nulla. Se c'è profileMapping (in analyze_client_excel o get_brand_profile), il Brand conosce già questo formato e ha corretto la mappatura delle colonne (es. IE → EN_IE): mostra le correzioni nella mappatura da confermare.
 3. SELEZIONE — chiedi di selezionare i frame in Figma con il plugin aperto (bridge_status, get_selection).
 4. ABBINAMENTO — chiama match_selection con le colonne confermate. La Colonna sorgente si sceglie dai dati (sourceChoice): se differisce dalla lingua principale del profilo riportalo in una riga. Presenta UN SOLO riepilogo: abbinamenti simili (con punteggio), Livelli orfani e Celle multi-livello (queste ultime vanno sistemate dal designer, non abbinarle). Se tra gli orfani ci sono livelli di contorno (To:, Reply to:, date, logo) proponi di escluderli con exclude_layers (restano nel Profilo brand, o nella sessione se non c'è Brand) e richiama match_selection. Registra le decisioni con confirm_matches.
    LINGUE — solo ora, dopo l'abbinamento, proponi le lingue da generare: quelle in "languages.needed" (le colonne con almeno una traduzione nelle righe usate dai frame). Le lingue in "languages.notNeeded" hanno traduzioni solo in righe che non sono nei frame selezionati (es. un disclaimer): non proporle e dillo in una riga. Se una lingua necessaria ha celle vuote (missingRows), segnalalo. Chiedi conferma.
-5. GENERAZIONE — chiama generate_exports con le lingue confermate. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
-6. EXCEL AGGIORNATO — chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
-7. TRADUZIONE AI (facoltativa) — alla fine chiedi SOLO se il designer vuole tradurre le celle vuote (list_empty_cells ne dà il numero). Se sì, traduci rispettando il Glossario brand (se c'è un Brand), fai rivedere le traduzioni, salvale con save_ai_translations e rilancia generate_exports e write_updated_excel.
+5. GENERAZIONE — chiama generate_exports con le lingue confermate. Se risponde "confirm-settings", PRIMA di esportare fai le domande in "questions" con lo strumento AskUserQuestion (una domanda per voce, opzioni con gli esempi di nome o di section, la consigliata per prima): suffisso Lang o Lang-Country e section (divise per country, divise per lang, no). Non scegliere tu: di base il paese non va nel nome se la lingua non ha altre varianti (EN_GB → EN), salvo che il designer scelga Lang-Country. Poi richiama con language_suffix e section_mode. Se risponde "conflict", chiedi se sostituire (replace) o creare una nuova versione (version) e richiama con on_conflict.
+6. EXCEL AGGIORNATO — solo se le traduzioni vengono da un Excel sul Mac (analyze_client_excel); con load_translations salta questo passo. Chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
+7. TRADUZIONE AI (facoltativa) — alla fine chiedi SOLO se il designer vuole tradurre le celle vuote (list_empty_cells ne dà il numero). Se sì, traduci rispettando il Glossario brand (se c'è un Brand), fai rivedere le traduzioni, salvale con save_ai_translations e rilancia generate_exports (e write_updated_excel se c'è un Excel sul Mac).
 8. REFERENCE — chiama pending_profile_updates. Senza Brand chiedi se salvare questo Excel come reference per la prossima volta (proponi suggestedName, il designer può cambiarlo). Con un Brand, se ci sono novità (Modello Excel, lingue, impostazioni usate diverse dal profilo), elencale in una riga e chiedi se ricordarle. Solo dopo un sì chiama apply_profile_updates; con un no il profilo non cambia.`;
 
 // Senza Brand e senza un indizio dai dati, la lingua della Colonna sorgente provvisoria.
@@ -78,7 +90,11 @@ export function suggestedProfileName(path: string): string {
   return name || 'Nuovo profilo';
 }
 
-export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }): McpServer {
+export function createMcpServer(deps: {
+  bridge: PluginLink; now?: () => Date; excelSearchRoots?: string[];
+  // Senza, l'Excel si legge dove si trova (test e usi programmatici).
+  workingCopies?: WorkingCopies;
+}): McpServer {
   const server = new McpServer({ name: 'figma-auto-fill', version: '1.0.0' });
   const session = newSession();
   const now = deps.now ?? (() => new Date());
@@ -132,7 +148,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     return { columns: [...columns].sort((a, b) => a[0] - b[0]).map(([column, code]) => ({ column, code })), changes };
   };
   const requireExcel = (): ExcelConfig => {
-    if (!session.excel) throw new Error('Nessun Excel cliente in uso: esegui analyze_client_excel e match_selection');
+    if (!session.excel) throw new Error('Nessuna traduzione in uso: esegui analyze_client_excel (o load_translations) e match_selection');
     return session.excel;
   };
   const rowByNumber = (excel: ExcelConfig, row: number): ExcelRow => {
@@ -275,78 +291,121 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     } : null;
   };
 
+  // Analisi comune a un Excel cliente e alle traduzioni dalla chat: lingue, Brand, Colonna sorgente provvisoria.
+  const analyzeSource = async (input: { path: string; original: string; sheets: SheetData[]; sheet?: string; brand?: string; inline: boolean }) => {
+    const { path, original, sheets, sheet, brand, inline } = input;
+    const warnings: string[] = [];
+    let archive: { profiles: Array<BrandProfile & { origin: ProfileOrigin }>; selected: string | null } | null = null;
+    try { archive = await profiles.all(); }
+    catch (error) { warnings.push(`Profili brand non disponibili (${(error as Error).message}): si lavora senza Brand`); }
+    if (brand) {
+      const found = archive?.profiles.find(item => item.name.toLowerCase() === brand.trim().toLowerCase());
+      if (!found) throw new Error(`Profilo brand "${brand}" non trovato.${archive?.profiles.length ? ` Disponibili: ${archive.profiles.map(item => item.name).join(', ')}.` : ''}`);
+      await profiles.select(found.name);
+      useBrand(found, found.origin);
+    }
+    const hint = session.brand?.primaryLanguage;
+    const report = analyzeWorkbook(path, sheets, { sheet, primary: hint ?? FALLBACK_PRIMARY, profileLanguages: session.brand?.languages });
+    if (!report.sourceColumn && report.analysis.languageColumns.length) {
+      const first = report.analysis.languageColumns[0];
+      report.sourceColumn = { column: first.column, letter: first.letter, code: first.code };
+    }
+    report.warnings = [...report.warnings.filter(item => !item.startsWith('Nessuna colonna per la lingua principale')), ...warnings];
+    const rows = sheets.find(item => item.name === report.analysis.sheet)?.rows ?? [];
+    session.analysis = report;
+    session.original = inline ? null : original;
+    session.inlineSheet = inline ? sheets[0] : null;
+    session.sheetRows = rows;
+    // Una tabella dalla chat non è il formato del cliente: niente Modello Excel né riconoscimento del Brand.
+    session.model = !inline && report.analysis.headerRow ? extractExcelModel({
+      sheet: report.analysis.sheet, headerRow: report.analysis.headerRow, rows,
+      languageColumns: report.analysis.languageColumns, idColumn: report.analysis.idColumn, sourceColumn: report.sourceColumn?.column
+    }) : null;
+    session.excel = null; session.match = null; session.accepted.clear(); session.generated = null; session.ai.clear(); session.usedSettings = null;
+    session.recognition = session.model && archive ? recognize(session.model, archive.profiles) : { outcome: 'none', candidates: [] };
+
+    const selected = archive?.selected ? archive.profiles.find(item => item.name === archive!.selected) ?? null : null;
+    const top = session.recognition.candidates[0];
+    let decision: 'chosen' | 'use-selected' | 'confirm-candidate' | 'choose-candidate' | 'discrepancy' | 'no-brand';
+    let next: string;
+    if (brand) {
+      decision = top && top.name !== session.brand!.name ? 'discrepancy' : 'chosen';
+      next = decision === 'discrepancy'
+        ? `Il designer ha indicato ${session.brand!.name}, ma questo Excel somiglia a ${top.name}: fai notare la differenza e chiedi quale usare.`
+        : `Brand ${session.brand!.name} in uso.`;
+    } else if (selected && top && top.name !== selected.name) {
+      decision = 'discrepancy';
+      useBrand(null, null);
+      next = `Nel plugin è selezionato ${selected.name}, ma questo Excel somiglia a ${session.recognition.candidates.map(item => item.name).join(' / ')}: fai notare la differenza e chiedi quale usare (get_brand_profile), oppure se lavorare senza Brand.`;
+    } else if (selected) {
+      decision = 'use-selected';
+      useBrand(selected, selected.origin);
+      next = top
+        ? `Uso ${selected.name}, selezionato nel plugin e riconosciuto dall'Excel.`
+        : `Uso ${selected.name}, selezionato nel plugin.${selected.excelModels.length ? ' L\'Excel però non somiglia al suo Modello Excel: dillo in una riga.' : ''}`;
+    } else if (session.recognition.outcome === 'clear') {
+      decision = 'confirm-candidate';
+      next = `Questo Excel sembra di ${top.name}: chiedi conferma al designer e, se sì, chiama get_brand_profile.`;
+    } else if (session.recognition.outcome === 'ambiguous') {
+      decision = 'choose-candidate';
+      next = `Questo Excel somiglia a più Brand (${session.recognition.candidates.map(item => item.name).join(', ')}): elencali e fai scegliere, o prosegui senza Brand.`;
+    } else if (inline) {
+      decision = 'no-brand';
+      next = 'Nessun Brand selezionato: chiedi in una riga se il designer vuole usarne uno (list_brand_profiles), altrimenti prosegui senza.';
+    } else {
+      decision = 'no-brand';
+      next = 'Excel nuovo, non somiglia a nessun profilo: dillo in una riga e prosegui senza Brand. Alla fine proponi di salvarlo come reference (pending_profile_updates).';
+    }
+    return {
+      ...report,
+      sourceColumnNote: 'Colonna sorgente provvisoria: match_selection la sceglie dai testi che coincidono con Figma.',
+      brand: {
+        sessionBrand: session.brand?.name ?? null, selectedInPlugin: selected?.name ?? null,
+        recognition: session.recognition, decision, next
+      },
+      profileDifferences: session.brand ? profileDifferences(session.brand, session.model, report.analysis.languageColumns.map(item => item.code)) : null,
+      profileMapping: inline ? null : mappingNote()
+    };
+  };
+
   // ---------- Excel cliente ----------
   register('analyze_client_excel',
-    'Analizza un Excel cliente (struttura libera): fogli, colonne lingua con codice normalizzato, colonne ignorate e Colonna sorgente provvisoria. Riconosce il Brand dal Modello Excel (blocco "brand", da far confermare) e riporta le differenze con il profilo come informazione. Non richiede un Brand.',
-    { path: z.string(), sheet: z.string().optional(), brand: z.string().optional().describe('Brand indicato dal designer, se lo nomina') },
-    async ({ path, sheet, brand }) => {
-      const warnings: string[] = [];
-      let archive: { profiles: Array<BrandProfile & { origin: ProfileOrigin }>; selected: string | null } | null = null;
-      try { archive = await profiles.all(); }
-      catch (error) { warnings.push(`Profili brand non disponibili (${(error as Error).message}): si lavora senza Brand`); }
-      if (brand) {
-        const found = archive?.profiles.find(item => item.name.toLowerCase() === brand.trim().toLowerCase());
-        if (!found) throw new Error(`Profilo brand "${brand}" non trovato.${archive?.profiles.length ? ` Disponibili: ${archive.profiles.map(item => item.name).join(', ')}.` : ''}`);
-        await profiles.select(found.name);
-        useBrand(found, found.origin);
-      }
-      const sheets = await readSheets(path);
-      const hint = session.brand?.primaryLanguage;
-      const report = analyzeWorkbook(path, sheets, { sheet, primary: hint ?? FALLBACK_PRIMARY, profileLanguages: session.brand?.languages });
-      if (!report.sourceColumn && report.analysis.languageColumns.length) {
-        const first = report.analysis.languageColumns[0];
-        report.sourceColumn = { column: first.column, letter: first.letter, code: first.code };
-      }
-      report.warnings = [...report.warnings.filter(item => !item.startsWith('Nessuna colonna per la lingua principale')), ...warnings];
-      const rows = sheets.find(item => item.name === report.analysis.sheet)?.rows ?? [];
-      session.analysis = report;
-      session.sheetRows = rows;
-      session.model = report.analysis.headerRow ? extractExcelModel({
-        sheet: report.analysis.sheet, headerRow: report.analysis.headerRow, rows,
-        languageColumns: report.analysis.languageColumns, idColumn: report.analysis.idColumn, sourceColumn: report.sourceColumn?.column
-      }) : null;
-      session.excel = null; session.match = null; session.accepted.clear(); session.generated = null; session.ai.clear(); session.usedSettings = null;
-      session.recognition = session.model && archive ? recognize(session.model, archive.profiles) : { outcome: 'none', candidates: [] };
-
-      const selected = archive?.selected ? archive.profiles.find(item => item.name === archive!.selected) ?? null : null;
-      const top = session.recognition.candidates[0];
-      let decision: 'chosen' | 'use-selected' | 'confirm-candidate' | 'choose-candidate' | 'discrepancy' | 'no-brand';
-      let next: string;
-      if (brand) {
-        decision = top && top.name !== session.brand!.name ? 'discrepancy' : 'chosen';
-        next = decision === 'discrepancy'
-          ? `Il designer ha indicato ${session.brand!.name}, ma questo Excel somiglia a ${top.name}: fai notare la differenza e chiedi quale usare.`
-          : `Brand ${session.brand!.name} in uso.`;
-      } else if (selected && top && top.name !== selected.name) {
-        decision = 'discrepancy';
-        useBrand(null, null);
-        next = `Nel plugin è selezionato ${selected.name}, ma questo Excel somiglia a ${session.recognition.candidates.map(item => item.name).join(' / ')}: fai notare la differenza e chiedi quale usare (get_brand_profile), oppure se lavorare senza Brand.`;
-      } else if (selected) {
-        decision = 'use-selected';
-        useBrand(selected, selected.origin);
-        next = top
-          ? `Uso ${selected.name}, selezionato nel plugin e riconosciuto dall'Excel.`
-          : `Uso ${selected.name}, selezionato nel plugin.${selected.excelModels.length ? ' L\'Excel però non somiglia al suo Modello Excel: dillo in una riga.' : ''}`;
-      } else if (session.recognition.outcome === 'clear') {
-        decision = 'confirm-candidate';
-        next = `Questo Excel sembra di ${top.name}: chiedi conferma al designer e, se sì, chiama get_brand_profile.`;
-      } else if (session.recognition.outcome === 'ambiguous') {
-        decision = 'choose-candidate';
-        next = `Questo Excel somiglia a più Brand (${session.recognition.candidates.map(item => item.name).join(', ')}): elencali e fai scegliere, o prosegui senza Brand.`;
-      } else {
-        decision = 'no-brand';
-        next = 'Excel nuovo, non somiglia a nessun profilo: dillo in una riga e prosegui senza Brand. Alla fine proponi di salvarlo come reference (pending_profile_updates).';
-      }
+    'Analizza un Excel cliente (struttura libera), indicato con path o, se è un allegato della chat, con file_name: fogli, colonne lingua con codice normalizzato, colonne ignorate e Colonna sorgente provvisoria. Riconosce il Brand dal Modello Excel (blocco "brand", da far confermare) e riporta le differenze con il profilo come informazione. Non richiede un Brand.',
+    {
+      path: z.string().optional().describe('Percorso dell\'Excel sul Mac del designer (anche ~/...)'),
+      file_name: z.string().optional().describe('Solo il nome del file (es. Traduzioni.xlsx) quando l\'Excel è allegato alla chat: il server lo cerca in Download, Scrivania e Documenti'),
+      sheet: z.string().optional(), brand: z.string().optional().describe('Brand indicato dal designer, se lo nomina')
+    },
+    async ({ path: requested, file_name, sheet, brand }) => {
+      const original = await resolveExcelPath({ path: requested, fileName: file_name }, deps.excelSearchRoots ?? DEFAULT_SEARCH_ROOTS);
+      const path = deps.workingCopies ? await deps.workingCopies.take(original) : original;
+      const report = await analyzeSource({ path, original, sheets: await readSheets(path), sheet, brand, inline: false });
       return {
         ...report,
-        sourceColumnNote: 'Colonna sorgente provvisoria: match_selection la sceglie dai testi che coincidono con Figma.',
-        brand: {
-          sessionBrand: session.brand?.name ?? null, selectedInPlugin: selected?.name ?? null,
-          recognition: session.recognition, decision, next
-        },
-        profileDifferences: session.brand ? profileDifferences(session.brand, session.model, report.analysis.languageColumns.map(item => item.code)) : null,
-        profileMapping: mappingNote()
+        path: original,
+        workingCopy: path !== original
+          ? { path, note: 'Copia temporanea in excel-clienti/: si elimina a fine sessione. L\'originale non viene toccato.' }
+          : undefined
       };
+    });
+
+  register('load_translations',
+    'Carica le traduzioni che il designer ha scritto in chat o allegato (Excel, CSV, PDF, Word, immagine...) senza passare da un file sul suo Mac: leggi tu il contenuto e passalo come tabella. Prima riga = intestazioni: codici o nomi di lingua (IT, EN, EN_GB, Deutsch...), più eventuali colonne ID o note; ogni riga successiva = un testo nelle varie lingue. Poi si prosegue come con un Excel cliente (match_selection, generate_exports), ma senza Excel aggiornato.',
+    {
+      table: z.array(z.array(z.union([z.string(), z.number()]).nullable())).min(2)
+        .describe('Righe della tabella; la prima contiene le intestazioni di colonna'),
+      source_name: z.string().optional().describe('Da dove vengono i testi, es. il nome del file allegato o "chat"'),
+      brand: z.string().optional().describe('Brand indicato dal designer, se lo nomina')
+    },
+    async ({ table, source_name, brand }) => {
+      const width = Math.max(...table.map(row => row.length));
+      const rows = table.map(row => Array.from({ length: width }, (_, index) => String(row[index] ?? '').trim()));
+      const name = source_name?.trim() || 'chat';
+      const report = await analyzeSource({ path: name, original: name, sheets: [{ name: 'Traduzioni', rows }], brand, inline: true });
+      if (!report.analysis.languageColumns.length) {
+        throw new Error(`Nessuna colonna lingua riconosciuta nelle intestazioni (${rows[0].filter(Boolean).join(', ')}): usa codici come IT, EN, EN_GB`);
+      }
+      return { ...report, source: name, note: 'Traduzioni dalla chat: niente file sul Mac, quindi niente Excel aggiornato (salta write_updated_excel).' };
     });
 
   register('match_selection',
@@ -359,14 +418,15 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     },
     async ({ source_column, source_language, languages, threshold }) => {
       const report = session.analysis;
-      if (!report) throw new Error('Esegui prima analyze_client_excel');
+      if (!report) throw new Error('Esegui prima analyze_client_excel o load_translations');
       const languageColumns: Record<string, number> = {};
       if (languages) {
         for (const item of languages) languageColumns[normalizeLanguage(item.code)] = columnNumber(item.column);
       } else {
         for (const item of profileColumns().columns) if (!(item.code in languageColumns)) languageColumns[item.code] = item.column;
       }
-      const sheet: SheetData | undefined = (await readSheets(report.path)).find(item => item.name === report.analysis.sheet);
+      const inline = session.inlineSheet;
+      const sheet: SheetData | undefined = inline ?? (await readSheets(report.path)).find(item => item.name === report.analysis.sheet);
       if (!sheet) throw new Error(`Foglio "${report.analysis.sheet}" non più presente nel file`);
       const { headerRow, idColumn } = report.analysis;
 
@@ -410,8 +470,8 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
         if (Object.values(values).every(value => !value.trim())) return;
         rows.push({ row: index + 1, id: idColumn ? (cells[idColumn - 1] ?? '').trim() || undefined : undefined, source: values[primary] ?? '', values });
       });
-      session.excel = { path: report.path, sheet: sheet.name, headerRow, idColumn, sourceColumn, primary, languageColumns, rows, lastRow: sheet.rows.length };
-      session.model = extractExcelModel({
+      session.excel = { path: report.path, original: session.original ?? report.path, inline: Boolean(inline), sheet: sheet.name, headerRow, idColumn, sourceColumn, primary, languageColumns, rows, lastRow: sheet.rows.length };
+      session.model = inline ? null : extractExcelModel({
         sheet: sheet.name, headerRow, rows: sheet.rows, idColumn, sourceColumn,
         languageColumns: Object.entries(languageColumns).map(([code, column]) => ({ code, column }))
       });
@@ -519,13 +579,16 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
 
   // ---------- generazione in Figma ----------
   register('generate_exports',
-    'Fa generare al plugin le varianti linguistiche in EXPORT per i frame selezionati. Se esistono già export con gli stessi nomi risponde "conflict": chiedi se sostituire o creare una nuova versione e richiama con on_conflict.',
+    'Fa generare al plugin le varianti linguistiche in EXPORT per i frame selezionati. Senza language_suffix o section_mode risponde "confirm-settings" con gli esempi di nome: chiedi al designer con AskUserQuestion e richiama passando le risposte. Se esistono già export con gli stessi nomi risponde "conflict": chiedi se sostituire o creare una nuova versione e richiama con on_conflict.',
     {
       languages: z.array(z.string()).optional().describe('Lingue da generare (default: quelle con traduzioni nelle righe usate dai frame, vedi languages.needed)'),
       on_conflict: z.enum(['replace', 'version']).optional(),
+      language_suffix: z.enum(['lang', 'lang-country']).optional()
+        .describe('Suffisso del nome: lang = solo lingua (EN_GB → EN) quando la lingua non ha altre varianti tra quelle generate; lang-country = codice completo (EN_GB)'),
       section_mode: z.enum(['none', 'locale', 'base']).optional()
+        .describe('Section degli export: locale = una per lingua-paese (en_gb/), base = una per lingua (en/, con le sue varianti), none = nessuna')
     },
-    async ({ languages, on_conflict, section_mode }) => {
+    async ({ languages, on_conflict, language_suffix, section_mode }) => {
       const brand = session.brand;
       const excel = requireExcel();
       const frames = session.selection;
@@ -569,12 +632,45 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
         };
       }
       const frameIds = frames.map(frame => frame.id);
-      const base = {
-        frameIds, targets, primary,
-        baseNames: Object.fromEntries(frames.map(frame => [frame.id, ui?.baseNames[frame.id]?.trim() || frame.baseName])),
-        naming
-      };
-      const sectionMode = section_mode ?? ui?.sectionMode ?? brand?.sections ?? 'none';
+      const baseNames = Object.fromEntries(frames.map(frame => [frame.id, ui?.baseNames[frame.id]?.trim() || frame.baseName]));
+      const suggestedSections = ui?.sectionMode ?? brand?.sections ?? 'none';
+      // Il suffisso conta solo se qualche lingua ha un paese: con EN, DE, FR i due modi danno gli stessi nomi.
+      const suffixMatters = targets.some(code => code.includes('_'));
+      if ((suffixMatters && !language_suffix) || !section_mode) {
+        const sample = frames[0];
+        const context = { name: baseNames[sample.id], index: 0, count: frames.length, width: sample.width ?? 0, height: sample.height ?? 0 };
+        const names = (suffix: LanguageSuffix) => targets.map(code =>
+          renderOutputName(context, code, { ...naming, shortLanguages: shortLanguages(targets, suffix) }));
+        const kept = targets.filter(code => code.includes('_') && !shortLanguages(targets, 'lang').includes(code));
+        return {
+          status: 'confirm-settings',
+          message: 'Prima di generare chiedi al designer, con AskUserQuestion e una domanda per ciascun punto in "questions", le impostazioni mancanti. Mostra gli esempi nelle opzioni. Poi richiama generate_exports con language_suffix e section_mode (e languages se le avevi passate).',
+          questions: [
+            ...(suffixMatters && !language_suffix ? [{
+              param: 'language_suffix',
+              question: 'Vuoi usare Lang o Lang-Country come suffisso?',
+              options: [
+                { value: 'lang', label: 'Lang', example: names('lang'), recommended: true,
+                  note: kept.length ? `${kept.join(', ')} restano con il paese: la stessa lingua ha più varianti` : undefined },
+                { value: 'lang-country', label: 'Lang-Country', example: names('lang-country') }
+              ]
+            }] : []),
+            ...(!section_mode ? [{
+              param: 'section_mode',
+              question: 'Gli export li vuoi dentro una section?',
+              options: [
+                { value: 'locale', label: 'Sì, divise per country', example: [...new Set(targets.map(code => `${code.toLowerCase()}/`))] },
+                { value: 'base', label: 'Sì, divise per lang', example: [...new Set(targets.map(code => `${code.split('_')[0].toLowerCase()}/`))] },
+                { value: 'none', label: 'No' }
+              ].map(option => ({ ...option, recommended: option.value === suggestedSections || undefined }))
+            }] : [])
+          ]
+        };
+      }
+      const suffix: LanguageSuffix = language_suffix ?? 'lang';
+      const finalNaming: NamingOptions = { ...naming, shortLanguages: shortLanguages(targets, suffix) };
+      const base = { frameIds, targets, primary, baseNames, naming: finalNaming };
+      const sectionMode = section_mode;
       const plan = await deps.bridge.request<{ replacements: Array<{ id: string; name: string; language: string }> }>('plan', base);
       if (plan.replacements.length && !on_conflict) {
         return {
@@ -596,7 +692,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
       const differences = brand ? settingsDifferences(brand, session.usedSettings) : [];
       return {
         status: 'done', created: result.names, fallbackCells: fallbacks, warnings: result.warnings,
-        usedSettings: { source: fromPlugin ? 'plugin' : brand ? 'profilo brand' : 'default', nameTemplate: naming.template, baseNames: base.baseNames, sectionMode },
+        usedSettings: { source: fromPlugin ? 'plugin' : brand ? 'profilo brand' : 'default', nameTemplate: naming.template, languageSuffix: suffix, baseNames: base.baseNames, sectionMode },
         profileSuggestion: differences.length
           ? `Impostazioni diverse da ${brand!.name}: ${differences.join('; ')}. A fine sessione chiedi in una riga se ricordarle (pending_profile_updates).`
           : undefined
@@ -614,6 +710,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     },
     async ({ output_path, overwrite, only_used_rows, add_orphans }) => {
       const excel = requireExcel();
+      if (excel.inline) throw new Error('Le traduzioni vengono dalla chat (load_translations): non c\'è un Excel cliente da aggiornare');
       const figma = session.generated ? await snapshot(session.generated.frameIds) : [];
       const plan = planUpdates({
         rows: excel.rows, languageColumns: excel.languageColumns, primary: excel.primary, sourceColumn: excel.sourceColumn,
@@ -621,7 +718,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
         generated: session.generated?.rows ?? [], figma, ai: [...session.ai.values()],
         overwrite: (overwrite ?? []).map(item => ({ row: item.row, language: normalizeLanguage(item.language) })), lastRow: excel.lastRow
       });
-      const output = output_path ?? defaultOutputPath(excel.path);
+      const output = output_path ?? defaultOutputPath(excel.original);
       const usedRows = [...new Set([...session.accepted.values()].map(item => item.row))];
       const { removedRows } = await writeUpdatedWorkbook({
         input: excel.path, output, sheet: excel.sheet, plan, idColumn: excel.idColumn,
@@ -693,7 +790,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     if (!session.brand) {
       return {
         mode: 'create' as const,
-        suggestedName: suggestedProfileName(session.analysis?.path ?? 'Nuovo profilo'),
+        suggestedName: suggestedProfileName(session.original ?? 'Nuovo profilo'),
         includes: {
           excelModel: { sheet: model.sheet, headers: model.headers.length, recurringLabels: model.labels.length },
           primaryLanguage: excel?.primary ?? null,
@@ -718,7 +815,9 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
     {},
     async () => {
       const result = pending();
-      if (!result) return { mode: 'none', message: 'Nessun Excel analizzato in questa sessione' };
+      if (!result) {
+        return { mode: 'none', message: session.inlineSheet ? 'Traduzioni dalla chat: nessun Modello Excel da ricordare' : 'Nessun Excel analizzato in questa sessione' };
+      }
       if (result.mode === 'update' && !result.changes.excelModel && !result.changes.newLanguages.length && !result.changes.settings.length) {
         return { mode: 'none', brand: result.brand, message: 'Nessuna novità rispetto al profilo' };
       }
@@ -783,8 +882,8 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
   server.registerPrompt(
     'localizza-frame',
     {
-      title: 'Localizza i frame da un Excel cliente',
-      description: 'Guida il dialogo: Excel cliente → Brand riconosciuto (facoltativo) → abbinamento e lingue → generazione → Excel aggiornato → Traduzione AI facoltativa → reference.'
+      title: 'Localizza i frame da un Excel cliente o da traduzioni in chat',
+      description: 'Guida il dialogo: traduzioni (Excel cliente o chat) → Brand riconosciuto (facoltativo) → abbinamento e lingue → generazione → Excel aggiornato → Traduzione AI facoltativa → reference.'
       // Nessun argomento: i client (es. Claude Desktop) mostrerebbero un modulo da compilare prima di partire.
       // Excel e Brand li chiede l'agente nel dialogo (passo 1 di WORKFLOW).
     },
@@ -793,7 +892,7 @@ export function createMcpServer(deps: { bridge: PluginLink; now?: () => Date }):
         role: 'user' as const,
         content: {
           type: 'text' as const,
-          text: `Aiutami a localizzare i frame Figma selezionati partendo da un Excel cliente.\n\n${WORKFLOW}`
+          text: `Aiutami a localizzare i frame Figma selezionati partendo dalle traduzioni (un Excel cliente o testi che ti do in chat).\n\n${WORKFLOW}`
         }
       }]
     })

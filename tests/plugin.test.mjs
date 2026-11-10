@@ -609,13 +609,13 @@ test('il modello del nome con variabili dinamiche guida export, versioni e sosti
   const input = request(sourceFrame.id);
   input.naming = { template: 'TBL-{Nome}-{Ratio}-{Lingua}', start: 1, date: '' };
   await figma.ui.onmessage(input);
-  assert.deepEqual(Array.from(messages.at(-1).names), ['TBL-260717_Hero-2×1-en', 'TBL-260717_Hero-2×1-nl']);
+  assert.deepEqual(Array.from(messages.at(-1).names), ['TBL-260717_Hero-2x1-en', 'TBL-260717_Hero-2x1-nl']);
   backToSource();
   await figma.ui.onmessage({ kind: 'inspect', frameIds: [sourceFrame.id], targets: ['EN', 'NL'], primary: 'EN', baseNames: input.baseNames, naming: input.naming });
-  assert.deepEqual(Array.from(messages.at(-1).replacements, item => item.name), ['TBL-260717_Hero-2×1-en', 'TBL-260717_Hero-2×1-nl']);
+  assert.deepEqual(Array.from(messages.at(-1).replacements, item => item.name), ['TBL-260717_Hero-2x1-en', 'TBL-260717_Hero-2x1-nl']);
   await figma.ui.onmessage({ ...request(sourceFrame.id), naming: input.naming });
   backToSource();
-  assert.deepEqual(Array.from(messages.at(-1).names), ['TBL-260717_Hero_v2-2×1-en', 'TBL-260717_Hero_v2-2×1-nl']);
+  assert.deepEqual(Array.from(messages.at(-1).names), ['TBL-260717_Hero_v2-2x1-en', 'TBL-260717_Hero_v2-2x1-nl']);
   await figma.ui.onmessage({ ...request(sourceFrame.id), naming: { template: '{Nome}-{Paese}', start: 1, date: '' } });
   assert.equal(messages.at(-1).kind, 'error');
   assert.match(messages.at(-1).message, /stesso nome/);
