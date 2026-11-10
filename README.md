@@ -31,7 +31,15 @@ Non serve installare Node.js né usare il terminale. Dalla pagina **[Releases](h
 1. Fai doppio clic su `figma-auto-fill-vX.Y.Z.mcpb` e conferma l'installazione in Claude Desktop.
 2. Apri il plugin in Figma: nell'intestazione compare **Agente collegato**. Poi in Claude Desktop chiedi di localizzare i frame selezionati e indica l'Excel.
 
-**Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`.
+Se l'intestazione dice **Agente in uso da un altro plugin**, il plugin è aperto anche in un altro file Figma: chiudilo lì e dopo pochi secondi questo si collega. Se il plugin è aperto in un solo file, chiudi le schede del browser che non conosci e riapri il plugin.
+
+**Aggiornare:** scarica la nuova release, sostituisci la cartella del plugin con quella nuova e fai di nuovo doppio clic sul file `.mcpb`. Aggiorna sempre tutti e due insieme: un server di una versione precedente non riesce a collegarsi se è già attivo quello nuovo.
+
+#### Aggiornare dalla 1.0.3 o precedenti
+
+- **Profili brand dei clienti.** Il plugin non contiene più profili già pronti: il repository è pubblico e non deve contenere i Brand dei clienti. Chiedi all'amministratore i file `.brand.json` dei Brand con cui lavori e caricali una volta sola da **Profilo brand → Importa**. Se su un vecchio profilo pronto avevi salvato qualcosa di tuo (livelli esclusi, abbinamenti, lingue), il plugin lo conserva da solo come Profilo personale con lo stesso nome, e non serve importarlo.
+- **Stesso testo in più righe.** Se nell'Excel la stessa frase compare in più righe con traduzioni diverse (per esempio una CTA ripetuta in due blocchi), l'agente ti mostra le traduzioni e ti chiede quale riga usare. Finché non scegli, gli export non vengono creati.
+- **Excel aggiornato.** Se le righe tenute contengono formule, l'agente ti avvisa che i loro riferimenti puntano ancora alle righe dell'Excel originale, e ti propone la copia completa.
 
 ### Da sorgente (per sviluppare)
 
