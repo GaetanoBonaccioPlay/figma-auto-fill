@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeLanguage, detectSourceLanguage, stripLanguageSuffix,
-  outputName, outputGroupNames, renderOutputName, namingErrors, aspectRatio, parseMarkup, escapeMarkup, resolveValue, validateRows, orderRowsByFrames, rowsFromFrames, uniqueKeys
+  outputName, outputGroupNames, renderOutputName, shortLanguages, namingErrors, aspectRatio, parseMarkup, escapeMarkup, resolveValue, validateRows, orderRowsByFrames, rowsFromFrames, uniqueKeys
 } from '../dist/core.mjs';
 
 test('normalizza le lingue e separa solo il suffisso finale', () => {
@@ -65,16 +65,20 @@ test('nomi: modello predefinito, versione prima della lingua e data che sostitui
 
 test('variabili dinamiche: lingua, paese, aspect ratio e numerazione', () => {
   const naming = { template: 'TBL-{Nome}-{Ratio}-{Lingua}-{Paese}', start: 1, date: '' };
-  assert.equal(renderOutputName(ctx('Hero'), 'EN', naming), 'TBL-Hero-9×16-en');
-  assert.equal(renderOutputName(ctx('Hero'), 'EN_GB', naming), 'TBL-Hero-9×16-en-gb');
+  assert.equal(renderOutputName(ctx('Hero'), 'EN', naming), 'TBL-Hero-9x16-en');
+  assert.equal(renderOutputName(ctx('Hero'), 'EN_GB', naming), 'TBL-Hero-9x16-en-gb');
   assert.equal(renderOutputName(ctx('Hero'), 'EN_GB', { ...naming, template: '{Nome}-{Lingua}' }), 'Hero-en_gb');
   assert.equal(renderOutputName(ctx('Hero', { index: 1, count: 3 }), 'EN', { template: '{Nome}_{N↑}_{N↓}', start: 5, date: '' }), 'Hero_6_6_EN');
   assert.equal(renderOutputName(ctx('Hero', { index: 0, count: 3 }), 'EN', { template: '{Nome}_{N↓}', start: 1, date: '' }), 'Hero_3_EN');
   assert.equal(renderOutputName(ctx('Hero'), 'EN', { ...naming, template: '{Lingua}_{Nome}' }, 2), 'en_Hero_v2');
   assert.throws(() => renderOutputName(ctx('Hero'), 'EN', { ...naming, template: '{Boh}' }), /sconosciuta/);
-  assert.equal(aspectRatio(1080, 1080), '1×1');
-  assert.equal(aspectRatio(1200, 628), '1.91×1');
-  assert.equal(aspectRatio(1000, 777), '1000×777');
+  assert.equal(aspectRatio(1080, 1080), '1x1');
+  assert.equal(aspectRatio(1200, 1200), '1x1');
+  assert.equal(aspectRatio(1080, 1350), '4x5');
+  assert.equal(aspectRatio(1920, 1080), '16x9');
+  assert.equal(aspectRatio(1200, 628), '1200x628', 'nessuna proporzione intera corta: restano i pixel');
+  assert.equal(aspectRatio(1000, 777), '1000x777');
+  assert.equal(aspectRatio(2000, 1554), '2000x1554');
 });
 
 test('segnala nomi duplicati prodotti dal modello', () => {
@@ -123,4 +127,17 @@ test('le Key duplicate ricevono un suffisso sequenziale senza collisioni', () =>
   assert.deepEqual(result.keys, ['cta_1', 'title_2', 'title_1', 'title_3', 'cta_2', 'body']);
   assert.deepEqual(result.duplicates, [{ name: 'cta', keys: ['cta_1', 'cta_2'] }, { name: 'title', keys: ['title_2', 'title_3'] }]);
   assert.deepEqual(uniqueKeys(['a', 'b']).duplicates, []);
+});
+
+test('suffisso Lang: il paese si toglie solo se la lingua non ha altre varianti tra quelle generate', () => {
+  assert.deepEqual(shortLanguages(['EN_GB', 'FR_FR', 'IT'], 'lang'), ['EN_GB', 'FR_FR']);
+  assert.deepEqual(shortLanguages(['EN_GB', 'EN_US', 'FR_FR'], 'lang'), ['FR_FR']);
+  assert.deepEqual(shortLanguages(['EN', 'EN_GB'], 'lang'), []);
+  assert.deepEqual(shortLanguages(['EN_GB', 'FR_FR'], 'lang-country'), []);
+  const context = { name: 'hero', index: 0, count: 1, width: 640, height: 731 };
+  const naming = { template: '{Nome}', start: 1, date: '', shortLanguages: ['EN_GB'] };
+  assert.equal(renderOutputName(context, 'EN_GB', naming), 'hero_EN');
+  assert.equal(renderOutputName(context, 'EN_US', naming), 'hero_EN_US');
+  assert.equal(renderOutputName(context, 'EN_GB', { ...naming, template: '{Nome}-{Lingua}-{Paese}' }), 'hero-en');
+  assert.equal(renderOutputName(context, 'EN_GB', { ...naming, shortLanguages: undefined }), 'hero_EN_GB', 'senza scelta resta il codice completo');
 });

@@ -59,7 +59,7 @@ Dopo modifiche al codice, esegui di nuovo `npm run build` e riavvia il plugin. I
 
 ![Modello del nome, schede dei frame e anteprima dei nomi](docs/screenshots/01-frame-e-nomi.png)
 
-Il **Modello nome output** vale per tutti i frame selezionati e funziona come **Rename…** di Figma: i pulsanti inseriscono la variabile nel punto del cursore. Con `TBL-{Nome}-{Ratio}-{Lingua}` si ottiene per esempio `TBL-Hero-9×16-en`.
+Il **Modello nome output** vale per tutti i frame selezionati e funziona come **Rename…** di Figma: i pulsanti inseriscono la variabile nel punto del cursore. Con `TBL-{Nome}-{Ratio}-{Lingua}` si ottiene per esempio `TBL-Hero-9x16-en`.
 
 | Pulsante | Variabile | Valore |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ Il **Modello nome output** vale per tutti i frame selezionati e funziona come **
 | Numero ↑ / Numero ↓ | `{N↑}` / `{N↓}` | Numerazione crescente o decrescente nell'ordine dei frame, a partire da **Numera da** |
 | Language | `{Lingua}` | Codice completo (`en_gb`); solo la lingua (`en`) se il modello usa anche `{Paese}` |
 | Country | `{Paese}` | Paese (`gb`); vuoto per EN, e in quel caso il separatore che lo precede viene rimosso |
-| Aspect Ratio | `{Ratio}` | Aspect ratio del frame, per esempio `9×16`, `1×1`, `1.91×1` |
+| Aspect Ratio | `{Ratio}` | Aspect ratio del frame ridotto ai minimi termini, per esempio `1x1` (1200×1200), `4x5` (1080×1350), `9x16`; se la proporzione non si riduce a numeri interi corti restano i pixel del frame (`1200x628`) |
 | Data AAMMGG | `{Data}` | Data di oggi; un prefisso data già presente nel nome viene sostituito |
 
 - `{Lingua}` e `{Paese}` sono sempre minuscoli. Se il modello non contiene nessuna delle due, il codice lingua viene aggiunto in fondo (`_EN`).
@@ -167,12 +167,12 @@ Il collegamento vale solo per il plugin importato da manifest (modalità svilupp
 
 | Passo | Cosa succede | Strumenti |
 | --- | --- | --- |
-| 1. Excel cliente | Individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`); tu confermi la mappatura | `analyze_client_excel` |
+| 1. Traduzioni | L'Excel sul Mac è facoltativo. **Testi in chat o file allegato** (Excel, CSV, PDF, Word…): l'agente li legge e li passa direttamente al plugin come tabella, senza cercare file sul Mac; in questo caso non c'è Excel aggiornato. **Excel sul Mac**: individua foglio, intestazione e colonne lingua (anche `Italiano`, `Deutsch`, `FR-fr`) e tu confermi la mappatura; se indichi solo il nome del file lo cerca in Download, Scrivania e Documenti. L'analisi lavora su una copia temporanea in `excel-clienti/temp-<pid>/` (accanto al server, o in `FIGMA_AUTOFILL_EXCEL_DIR`), eliminata a fine sessione: l'originale non si tocca e `_updated.xlsx` viene scritto accanto all'originale | `load_translations`, `analyze_client_excel` |
 | 2. Brand (facoltativo) | Confronta il **Modello Excel** con quelli dei profili e propone il Brand a cui somiglia, chiedendo conferma. Con più candidati ti fa scegliere; se nel plugin hai selezionato un altro profilo te lo fa notare e chiede quale usare; se l'Excel è nuovo si lavora senza Brand. Le differenze con il profilo sono solo informative: vale l'Excel | `analyze_client_excel`, `get_brand_profile`, `clear_brand`, `list_brand_profiles` |
 | 3. Selezione | Legge i frame selezionati e i livelli di testo visibili | `bridge_status`, `get_selection` |
 | 4. Abbinamento | La **Colonna sorgente** si sceglie dai dati: è quella i cui testi coincidono con i livelli Figma, anche se il profilo dice un'altra lingua (te lo segnala). Testi identici (ignorando spazi, maiuscole, punteggiatura finale e tag) sono abbinati da soli; i **simili** (soglia 0,8), i **Livelli orfani** e le **Celle multi-livello** compaiono in un unico riepilogo. Se tra gli orfani ci sono livelli di contorno (`To:`, `Reply to:`, data, logo), l'agente ti propone di **escluderli** e li ricorda nel Profilo brand (o nella sessione se non c'è Brand). Solo a questo punto l'agente ti propone le lingue: quelle con almeno una traduzione nelle righe usate dai frame. Una colonna compilata solo in righe fuori dalla selezione (per esempio un disclaimer tradotto in più lingue) non viene proposta | `match_selection`, `exclude_layers`, `confirm_matches` |
-| 5. Generazione | Il plugin crea gli export come nel flusso manuale. Se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
-| 6. Excel aggiornato | Scrive `<nome>_updated.xlsx` con le sole righe usate dai frame | `write_updated_excel` |
+| 5. Generazione | Prima di esportare l'agente ti chiede il suffisso (**Lang**: `hero_EN`, oppure **Lang-Country**: `hero_EN_GB`) e se mettere gli export in section (divise per country `en_gb/`, divise per lang `en/`, oppure no), mostrando i nomi d'esempio. Con Lang il paese resta solo dove la stessa lingua ha più varianti (EN_GB ed EN_US insieme). Poi il plugin crea gli export come nel flusso manuale; se esistono già export con gli stessi nomi l'agente ti chiede se sostituire o creare `_v2`, `_v3` | `generate_exports` |
+| 6. Excel aggiornato | Solo con un Excel sul Mac: scrive `<nome>_updated.xlsx` con le sole righe usate dai frame | `write_updated_excel` |
 | 7. Traduzione AI | Solo se la chiedi: traduce le celle vuote rispettando il glossario | `list_empty_cells`, `save_ai_translations` |
 | 8. Reference | Senza Brand ti chiede se salvare l'Excel come nuovo profilo personale per riconoscerlo la volta dopo; con un Brand elenca le novità (Modello Excel, lingue, impostazioni usate diverse) e chiede se ricordarle. Senza il tuo sì nulla cambia | `pending_profile_updates`, `apply_profile_updates` |
 

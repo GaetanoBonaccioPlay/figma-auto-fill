@@ -55,7 +55,7 @@ test('il server impacchettato parte da solo: strumenti e bridge, e senza plugin 
   const client = new Client({ name: 'test', version: '1.0.0' });
   await client.connect(transport);
   try {
-    assert.equal((await client.listTools()).tools.length, 18);
+    assert.equal((await client.listTools()).tools.length, 19);
     assert.deepEqual((await client.listPrompts()).prompts.map(prompt => prompt.name), ['localizza-frame']);
     const status = JSON.parse((await client.callTool({ name: 'bridge_status', arguments: {} })).content[0].text);
     assert.deepEqual([status.connected, status.error], [false, null]);
