@@ -18,7 +18,7 @@ Un modulo puro condiviso tra plugin e server con lo schema del Profilo brand ver
 - [ ] Profilo effettivo: un'aggiunta sul modello del nome prevale sul Profilo di base; un aggiornamento del base conserva le aggiunte.
 - [ ] Le differenze tra un profilo importato e il suo base producono solo le novità.
 - [ ] Aggiunte il cui base non esiste più diventano un Profilo personale completo; con nome precedente dichiarato si collegano al nuovo nome.
-- [ ] Un profilo versione 1 (per esempio Columbia attuale) si migra senza perdite.
+- [ ] Un profilo versione 1 (per esempio Aurora attuale) si migra senza perdite.
 - [ ] Il modulo è compilabile sia nel bundle del plugin sia nel server.
 - [ ] Test sui moduli puri (seam 2).
 

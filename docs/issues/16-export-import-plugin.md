@@ -15,7 +15,7 @@ Dal plugin, anche senza Claude, il designer esporta un profilo in un file scaric
 ## Acceptance criteria
 
 - [ ] Un profilo esportato e reimportato da un collega senza quel Profilo di base produce lo stesso profilo effettivo.
-- [ ] Importare un Columbia esportato da chi ha Aggiunte personali crea solo quelle novità come aggiunte di chi importa.
+- [ ] Importare un Aurora esportato da chi ha Aggiunte personali crea solo quelle novità come aggiunte di chi importa.
 - [ ] Le domande unisci/sostituisci e sostituisci/rinomina compaiono nei casi previsti.
 - [ ] Un file non valido o di versione non supportata dà un messaggio chiaro.
 - [ ] Un file esportato copiato nella cartella dei Profili di base passa la build senza modifiche.

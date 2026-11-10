@@ -131,7 +131,7 @@ test('solo le righe usate: le altre vengono tolte dalla copia, intestazione e no
       matches: [{ layer: layer('headline', 'Scopri la nuova collezione'), row: 2 }, { layer: layer('cta', 'Acquista ora'), row: 4 }], orphans: [] });
     const output = join(dir, 'cliente_updated.xlsx');
     const result = await writeUpdatedWorkbook({ input, output, sheet: 'Campagna', plan, idColumn: 1, keepRows: [2, 4], headerRow: 1 });
-    assert.deepEqual(result, { removedRows: 2 });
+    assert.deepEqual(result, { removedRows: 2, copyNotes: null }, 'nessuna formula né cella unita: nessun avviso');
     assert.equal(await hash(input), before);
 
     const { workbook, sheet, text } = await readCells(output, 'Campagna');
@@ -144,7 +144,7 @@ test('solo le righe usate: le altre vengono tolte dalla copia, intestazione e no
     assert.match(noteText(sheet.getCell(3, 2)), /Nota del cliente/, 'le note del cliente seguono la loro riga');
 
     const full = await writeUpdatedWorkbook({ input, output: join(dir, 'completo.xlsx'), sheet: 'Campagna', plan });
-    assert.deepEqual(full, { removedRows: 0 });
+    assert.deepEqual(full, { removedRows: 0, copyNotes: null });
     assert.equal((await readCells(join(dir, 'completo.xlsx'), 'Campagna')).sheet.rowCount, 5);
   } finally { await cleanup(); }
 });
@@ -207,5 +207,97 @@ test('una copia generata si può rigenerare, un file qualunque con lo stesso nom
     assert.equal(await isGeneratedCopy(theirs), false);
     await assert.rejects(writeUpdatedWorkbook({ input, output: theirs, sheet: 'S', plan: emptyPlan, allowOverwrite: await isGeneratedCopy(theirs) }), /esiste già/);
     assert.equal(await fingerprint(theirs), before);
+  } finally { await cleanup(); }
+});
+
+test('solo le righe usate su un foglio formattato fino in fondo: scrittura rapida, orfani subito dopo le righe tenute', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Copy');
+    sheet.addRow(['ID', 'IT', 'EN']);
+    for (let i = 2; i <= 40; i++) sheet.addRow([`R${i}`, `testo ${i}`, `text ${i}`]);
+    // Formattazione senza valori fino a riga 60.000: prima la rimozione riga per riga era quadratica (minuti).
+    for (let row = 41; row <= 60_000; row++) sheet.getCell(row, 2).style = { font: { name: 'Arial' } };
+    const input = join(dir, 'formattato.xlsx');
+    await workbook.xlsx.writeFile(input);
+    const output = join(dir, 'formattato_updated.xlsx');
+    const started = Date.now();
+    const plan = { writes: [], conflicts: [], newRows: [{ row: 41, id: 'Hero/legal', source: 'figma:Hero', cells: [{ column: 2, language: 'IT', text: 'orfano' }] }] };
+    const { removedRows } = await writeUpdatedWorkbook({ input, output, sheet: 'Copy', plan, idColumn: 1, keepRows: [5, 30], headerRow: 1 });
+    assert.ok(Date.now() - started < 15_000, `scrittura troppo lenta: ${Date.now() - started} ms`);
+    assert.equal(removedRows, 37);
+    const { sheet: copy, text } = await readCells(output, 'Copy');
+    assert.deepEqual([text(2, 1), text(3, 1), text(4, 1), text(4, 2)], ['R5', 'R30', 'Hero/legal', 'orfano']);
+    assert.ok(copy.rowCount <= 4, `righe rimaste: ${copy.rowCount}`);
+  } finally { await cleanup(); }
+});
+
+test('solo le righe usate: celle unite ricreate sulle righe tenute, formule segnalate e mai rotte', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Copy');
+    sheet.addRow(['ID', 'IT', 'EN', 'Lunghezza']);
+    for (let i = 2; i <= 8; i++) sheet.addRow([`R${i}`, `testo ${i}`, `text ${i}`, null]);
+    sheet.getCell('D2').value = { formula: 'LEN(B2)', result: 7 };
+    // Formula condivisa con la cella principale in una riga che verrà tolta (riempimento verso il basso in Excel).
+    sheet.getCell('D5').value = { sharedFormula: 'D2', result: 7 };
+    sheet.mergeCells('B7:C7');   // unione orizzontale in una riga tenuta
+    sheet.mergeCells('A3:A4');   // unione verticale: si tiene solo la riga 4, dove il valore non c'è
+    sheet.mergeCells('A8:B8');   // unione in una riga tolta
+    const input = join(dir, 'unite.xlsx');
+    await workbook.xlsx.writeFile(input);
+    const output = join(dir, 'unite_updated.xlsx');
+    const plan = { writes: [], conflicts: [], newRows: [] };
+    const { copyNotes } = await writeUpdatedWorkbook({ input, output, sheet: 'Copy', plan, keepRows: [4, 5, 7], headerRow: 1 });
+    assert.deepEqual(copyNotes.formulaCells, ['D3'], 'indirizzo nella copia (D5 nell\'originale)');
+    assert.deepEqual(copyNotes.reducedMerges, ['A3:A4']);
+    const { sheet: copy, text } = await readCells(output, 'Copy');
+    assert.deepEqual(copy.model.merges, ['B4:C4']);
+    assert.equal(text(2, 1), 'R3', 'il valore di un\'unione passa alla prima riga tenuta');
+    assert.equal(text(4, 2), 'testo 7');
+    assert.equal(copy.getCell('C4').isMerged, true);
+    assert.deepEqual(copy.getCell('D3').value, { formula: 'LEN(B5)', result: 7 });
+    assert.equal(copy.rowCount, 4);
+  } finally { await cleanup(); }
+});
+
+test('righe aggiunte dopo una cella con solo spazi: ognuna nella sua riga, subito dopo le righe tenute; mai su una riga tolta', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Copy');
+    sheet.addRow(['ID', 'IT', 'EN']);
+    for (let i = 2; i <= 10; i++) sheet.addRow([`R${i}`, `testo ${i}`, `text ${i}`]);
+    sheet.getCell('A11').value = ' ';   // per readSheets la riga 11 è vuota: il piano numera le aggiunte da 11
+    const input = join(dir, 'spazi.xlsx');
+    await workbook.xlsx.writeFile(input);
+    const newRows = Array.from({ length: 9 }, (_, i) => ({ row: 11 + i, id: `Hero/orfano${i}`, source: 'figma:Hero', cells: [{ column: 2, language: 'IT', text: `orfano ${i}` }] }));
+    await writeUpdatedWorkbook({ input, output: join(dir, 'spazi_updated.xlsx'), sheet: 'Copy', plan: { writes: [], conflicts: [], newRows }, idColumn: 1, keepRows: [2, 3], headerRow: 1, appendAfter: 10 });
+    const { text } = await readCells(join(dir, 'spazi_updated.xlsx'), 'Copy');
+    assert.deepEqual(Array.from({ length: 9 }, (_, i) => text(4 + i, 2)), newRows.map((_, i) => `orfano ${i}`));
+    assert.deepEqual([text(2, 1), text(3, 1), text(4, 1)], ['R2', 'R3', 'Hero/orfano0']);
+
+    const stray = { writes: [{ row: 7, column: 3, language: 'EN', text: 'AI', previous: '', kind: 'ai', source: 'ai' }], conflicts: [], newRows: [] };
+    await assert.rejects(writeUpdatedWorkbook({ input, output: join(dir, 'stray_updated.xlsx'), sheet: 'Copy', plan: stray, keepRows: [2, 3], headerRow: 1, appendAfter: 10 }),
+      /Riga 7: non è tra le righe usate/);
+  } finally { await cleanup(); }
+});
+
+test('formula matrice nella sua riga: resta matrice, con l\'intervallo spostato', async () => {
+  const { dir, cleanup } = await tempDir();
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Copy');
+    sheet.addRow(['ID', 'IT', 'Somma']);
+    for (let i = 2; i <= 6; i++) sheet.addRow([`R${i}`, `testo ${i}`, null]);
+    sheet.getCell('C5').value = { formula: 'SUM(LEN(B2:B4))', result: 21, shareType: 'array', ref: 'C5' };
+    const input = join(dir, 'matrice.xlsx');
+    await workbook.xlsx.writeFile(input);
+    await writeUpdatedWorkbook({ input, output: join(dir, 'matrice_updated.xlsx'), sheet: 'Copy', plan: { writes: [], conflicts: [], newRows: [] }, keepRows: [5], headerRow: 1 });
+    const { sheet: copy } = await readCells(join(dir, 'matrice_updated.xlsx'), 'Copy');
+    const value = copy.getCell('C2').value;
+    assert.deepEqual([value.formula, value.shareType, value.ref], ['SUM(LEN(B2:B4))', 'array', 'C2']);
   } finally { await cleanup(); }
 });

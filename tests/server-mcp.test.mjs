@@ -139,18 +139,18 @@ test('Excel allegato alla chat: il server lo trova sul Mac dal nome del file, an
     await mkdir(join(env.dir, 'Downloads', 'campagna'), { recursive: true });
     await mkdir(join(env.dir, 'Desktop'), { recursive: true });
     const rows = [{ name: 'S', rows: [['Italiano'], ['a']] }];
-    const excel = await writeFixture(join(env.dir, 'Downloads', 'campagna', 'Columbia FW26.xlsx'), rows);
-    const byName = await env.call('analyze_client_excel', { file_name: 'Columbia FW26.xlsx' });
+    const excel = await writeFixture(join(env.dir, 'Downloads', 'campagna', 'Aurora FW26.xlsx'), rows);
+    const byName = await env.call('analyze_client_excel', { file_name: 'Aurora FW26.xlsx' });
     assert.equal(byName.isError, false, byName.text);
     assert.equal(byName.data.path, excel);
-    const cloud = await env.call('analyze_client_excel', { path: '/mnt/user-data/uploads/Columbia FW26.xlsx' });
+    const cloud = await env.call('analyze_client_excel', { path: '/mnt/user-data/uploads/Aurora FW26.xlsx' });
     assert.equal(cloud.isError, false, cloud.text);
     assert.equal(cloud.data.path, excel);
     const missing = await env.call('analyze_client_excel', { file_name: 'Altro.xlsx' });
     assert.equal(missing.isError, true);
     assert.match(missing.text, /non è sul Mac.*percorso completo/s);
-    await writeFixture(join(env.dir, 'Desktop', 'Columbia FW26 (1).xlsx'), rows);
-    const twice = await env.call('analyze_client_excel', { file_name: 'Columbia FW26.xlsx' });
+    await writeFixture(join(env.dir, 'Desktop', 'Aurora FW26 (1).xlsx'), rows);
+    const twice = await env.call('analyze_client_excel', { file_name: 'Aurora FW26.xlsx' });
     assert.equal(twice.isError, true);
     assert.match(twice.text, /Più file.*Desktop.*campagna|Più file.*campagna.*Desktop/s);
   } finally { await env.close(); }
@@ -288,7 +288,7 @@ test('dialogo completo: brand → Excel → lingue → abbinamento → generazio
     assert.equal((await env.call('bridge_status')).data.connected, true);
     assert.equal((await env.call('get_selection')).data.frames[0].textLayers.length, 3);
     const match = (await env.call('match_selection')).data;
-    assert.deepEqual(match.summary, { layers: 3, exact: 2, similar: 0, orphans: 1, multiLevel: 0, emptyLayersSkipped: 0, excluded: 0 });
+    assert.deepEqual(match.summary, { layers: 3, exact: 2, similar: 0, ambiguous: 0, orphans: 1, multiLevel: 0, emptyLayersSkipped: 0, excluded: 0 });
     assert.deepEqual(match.orphans.map(item => item.key), ['legal']);
     // FR non ha traduzioni nelle righe usate dai frame: non serve generarla
     assert.deepEqual(match.languages.needed, ['IT', 'EN', 'DE']);
@@ -445,7 +445,7 @@ test('usa modello del nome, nome base e section compilati nel plugin, non i defa
   };
   try {
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['English', 'French', 'German'], ['Acquista ora', 'Commander', 'Bestellen']] }]);
-    await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], naming: { template: '{Nome}' }, sections: 'none' });
+    await env.call('save_brand_profile', { name: 'Borealis', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], naming: { template: '{Nome}' }, sections: 'none' });
     await env.call('analyze_client_excel', { path: excel });
     await env.connectPlugin(state);
     const frameWithCta = { ...FRAME, textLayers: [{ id: 't', key: 'cta', text: 'Acquista ora', markup: 'Acquista ora' }] };
@@ -502,7 +502,7 @@ test('lingue: servono solo quelle con traduzioni nelle righe usate dai frame, no
         ['Disclaimer: offer valid in selected stores', 'Offre valable', 'Angebot gültig', 'Offre valable en Suisse', 'Aanbieding geldig']
       ]
     }]);
-    await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'] });
+    await env.call('save_brand_profile', { name: 'Borealis', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'] });
     await env.call('analyze_client_excel', { path: excel });
     await env.connectPlugin(state);
     const original = FRAME.textLayers;
@@ -536,7 +536,7 @@ test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non
     ] };
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'S', rows: [['English', 'French'], ['Acquista ora', 'Commander']] }]);
     await env.connectPlugin({ existing: [], exports: {}, frame });
-    await env.call('save_brand_profile', { name: 'TNF', primaryLanguage: 'EN', languages: ['EN', 'FR'] });
+    await env.call('save_brand_profile', { name: 'Borealis', primaryLanguage: 'EN', languages: ['EN', 'FR'] });
     await env.call('analyze_client_excel', { path: excel });
 
     const first = (await env.call('match_selection')).data;
@@ -546,7 +546,7 @@ test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non
     const added = (await env.call('exclude_layers', { add: ['To:', 'Reply to:', 're:^\\d{1,2} [a-z]+ \\d{4}'] })).data;
     assert.equal(added.ignoredLayers.length, 3);
     assert.equal((await env.call('generate_exports')).isError, true, 'dopo la modifica serve un nuovo abbinamento');
-    assert.deepEqual((await env.call('get_brand_profile', { name: 'TNF' })).data.ignoredLayers, added.ignoredLayers, 'persistite nel profilo');
+    assert.deepEqual((await env.call('get_brand_profile', { name: 'Borealis' })).data.ignoredLayers, added.ignoredLayers, 'persistite nel profilo');
 
     const second = (await env.call('match_selection')).data;
     assert.deepEqual([second.summary.exact, second.summary.orphans, second.summary.excluded], [1, 0, 3]);
@@ -554,7 +554,7 @@ test('livelli di contorno: l\'agente li propone, restano nel Profilo brand e non
     assert.equal(second.orphansHint, undefined);
 
     // una sessione nuova con lo stesso Brand parte già con le esclusioni
-    await env.call('get_brand_profile', { name: 'TNF' });
+    await env.call('get_brand_profile', { name: 'Borealis' });
     assert.equal((await env.call('match_selection')).data.summary.excluded, 3);
 
     const invalid = await env.call('exclude_layers', { add: ['re:('] });
@@ -630,7 +630,7 @@ const CTA_FRAME = { ...FRAME, textLayers: [
   { id: 'a', key: 'subject', text: 'Gear up for winter', markup: 'Gear up for winter' },
   { id: 'b', key: 'cta', text: 'Shop now', markup: 'Shop now' }
 ] };
-const columbiaRows = (sheet = 'Copy') => [{ name: sheet, rows: [
+const auroraRows = (sheet = 'Copy') => [{ name: sheet, rows: [
   ['ID', 'Field', 'EN', 'FR', 'DE'],
   ['001', 'Subject line', 'Gear up for winter', 'Équipez-vous', 'Rüste dich'],
   ['002', 'Preheader', 'Free shipping', 'Livraison offerte', 'Kostenloser Versand'],
@@ -642,7 +642,7 @@ test('senza Brand: flusso completo fino all\'Excel aggiornato, fatti imparati ne
   const env = await setup();
   try {
     await env.connectPlugin({ existing: [], exports: {}, frame: { ...CTA_FRAME, textLayers: [...CTA_FRAME.textLayers, { id: 'c', key: 'To:', text: 'To:', markup: 'To:' }] } });
-    const excel = await writeFixture(join(env.dir, 'Nike_AW26_final.xlsx'), columbiaRows('Copy'));
+    const excel = await writeFixture(join(env.dir, 'Delta_AW26_final.xlsx'), auroraRows('Copy'));
     const analysis = (await env.call('analyze_client_excel', { path: excel })).data;
     assert.equal(analysis.brand.decision, 'no-brand');
     assert.equal(analysis.brand.recognition.outcome, 'none');
@@ -663,26 +663,26 @@ test('senza Brand: flusso completo fino all\'Excel aggiornato, fatti imparati ne
 
     const pending = (await env.call('pending_profile_updates')).data;
     assert.equal(pending.mode, 'create');
-    assert.equal(pending.suggestedName, 'Nike AW26');
+    assert.equal(pending.suggestedName, 'Delta AW26');
     assert.deepEqual(pending.includes.excelModel, { sheet: 'Copy', headers: 5, recurringLabels: 4 });
     assert.equal(pending.includes.ignoredLayers, 1);
     assert.deepEqual(env.archive.list(), [], 'senza il sì del designer non si salva nulla');
 
-    const created = (await env.call('apply_profile_updates', { name: 'Nike' })).data;
-    assert.equal(created.created, 'Nike');
-    const saved = env.archive.get('Nike');
+    const created = (await env.call('apply_profile_updates', { name: 'Delta' })).data;
+    assert.equal(created.created, 'Delta');
+    const saved = env.archive.get('Delta');
     assert.deepEqual(saved.ignoredLayers, ['To:']);
     assert.deepEqual(saved.excelModels[0].labels, ['Subject line', 'Preheader', 'CTA', 'Footer']);
     assert.ok(!JSON.stringify(saved.excelModels).includes('Gear up'), 'nessun testo del cliente nel Modello Excel');
     assert.ok(!JSON.stringify(saved.excelModels).includes('001'), 'nessun ID nel Modello Excel');
-    assert.equal(env.archive.state.selected, 'Nike');
+    assert.equal(env.archive.state.selected, 'Delta');
 
     // la volta dopo, a plugin senza selezione, lo stesso formato con foglio rinominato viene riconosciuto
     assert.equal((await env.call('clear_brand')).data.brand, null);
     assert.equal(env.archive.state.selected, null, 'deselezionato anche nel plugin');
-    const next = (await env.call('analyze_client_excel', { path: await writeFixture(join(env.dir, 'nike2.xlsx'), columbiaRows('Copy v2')) })).data;
+    const next = (await env.call('analyze_client_excel', { path: await writeFixture(join(env.dir, 'delta2.xlsx'), auroraRows('Copy v2')) })).data;
     assert.equal(next.brand.decision, 'confirm-candidate');
-    assert.equal(next.brand.recognition.candidates[0].name, 'Nike');
+    assert.equal(next.brand.recognition.candidates[0].name, 'Delta');
     assert.ok(next.brand.recognition.candidates[0].common.labels.includes('CTA'));
   } finally { await env.close(); }
 });
@@ -710,53 +710,53 @@ test('Colonna sorgente dai dati: l\'Excel vince sulla lingua principale del prof
 test('riconoscimento: candidato chiaro, candidati vicini, discrepanza con il profilo selezionato nel plugin', async () => {
   const model = (sheet, labels) => ({ sheet, headerRow: 1, headers: [{ column: 1, header: 'Field' }, { column: 2, header: 'EN', code: 'EN' }], labels });
   const bases = [
-    { version: 2, name: 'Columbia', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], excelModels: [model('Copy', ['Subject line', 'Preheader', 'CTA', 'Footer'])] },
-    { version: 2, name: 'The North Face', primaryLanguage: 'EN', languages: ['EN'], excelModels: [model('TNF', ['Headline', 'Body', 'Button', 'Legal'])] }
+    { version: 2, name: 'Aurora', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], excelModels: [model('Copy', ['Subject line', 'Preheader', 'CTA', 'Footer'])] },
+    { version: 2, name: 'Borealis', primaryLanguage: 'EN', languages: ['EN'], excelModels: [model('Borealis', ['Headline', 'Body', 'Button', 'Legal'])] }
   ];
   const env = await setup({ bases });
   try {
     await env.connectPlugin({ existing: [], exports: {}, frame: CTA_FRAME });
-    const columbia = await writeFixture(join(env.dir, 'col.xlsx'), [{ name: 'Copy', rows: [['Field', 'EN'], ['Subject line', 'Gear up for winter'], ['Preheader', 'x'], ['CTA', 'Shop now'], ['Footer', 'y']] }]);
-    const clear = (await env.call('analyze_client_excel', { path: columbia })).data;
+    const aurora = await writeFixture(join(env.dir, 'col.xlsx'), [{ name: 'Copy', rows: [['Field', 'EN'], ['Subject line', 'Gear up for winter'], ['Preheader', 'x'], ['CTA', 'Shop now'], ['Footer', 'y']] }]);
+    const clear = (await env.call('analyze_client_excel', { path: aurora })).data;
     assert.equal(clear.brand.decision, 'confirm-candidate');
-    assert.deepEqual(clear.brand.recognition.candidates.map(item => [item.name, item.origin]), [['Columbia', 'base']]);
+    assert.deepEqual(clear.brand.recognition.candidates.map(item => [item.name, item.origin]), [['Aurora', 'base']]);
     assert.equal(clear.brand.sessionBrand, null, 'il server propone, non sceglie');
 
     // co-branded: etichette di entrambi → due candidati vicini
     const mixed = await writeFixture(join(env.dir, 'mix.xlsx'), [{ name: 'Mix', rows: [['Field', 'EN'], ['Subject line', 'a'], ['CTA', 'b'], ['Headline', 'c'], ['Button', 'd']] }]);
     const ambiguous = (await env.call('analyze_client_excel', { path: mixed })).data;
     assert.equal(ambiguous.brand.decision, 'choose-candidate');
-    assert.deepEqual(ambiguous.brand.recognition.candidates.map(item => item.name).sort(), ['Columbia', 'The North Face']);
+    assert.deepEqual(ambiguous.brand.recognition.candidates.map(item => item.name).sort(), ['Aurora', 'Borealis']);
 
-    // nel plugin è selezionato TNF ma l'Excel è Columbia: nessuna scelta automatica
-    env.archive.select('The North Face');
-    const discrepancy = (await env.call('analyze_client_excel', { path: columbia })).data;
+    // nel plugin è selezionato Borealis ma l'Excel è Aurora: nessuna scelta automatica
+    env.archive.select('Borealis');
+    const discrepancy = (await env.call('analyze_client_excel', { path: aurora })).data;
     assert.equal(discrepancy.brand.decision, 'discrepancy');
-    assert.equal(discrepancy.brand.selectedInPlugin, 'The North Face');
+    assert.equal(discrepancy.brand.selectedInPlugin, 'Borealis');
     assert.equal(discrepancy.brand.sessionBrand, null);
-    assert.match(discrepancy.brand.next, /The North Face.*Columbia.*chiedi/);
+    assert.match(discrepancy.brand.next, /Borealis.*Aurora.*chiedi/);
 
-    // il designer sceglie Columbia: diventa il Brand della sessione e del plugin
-    const chosen = (await env.call('get_brand_profile', { name: 'Columbia' })).data;
+    // il designer sceglie Aurora: diventa il Brand della sessione e del plugin
+    const chosen = (await env.call('get_brand_profile', { name: 'Aurora' })).data;
     assert.equal(chosen.origin, 'base');
-    assert.equal(env.archive.state.selected, 'Columbia');
-    const again = (await env.call('analyze_client_excel', { path: columbia })).data;
+    assert.equal(env.archive.state.selected, 'Aurora');
+    const again = (await env.call('analyze_client_excel', { path: aurora })).data;
     assert.equal(again.brand.decision, 'use-selected');
   } finally { await env.close(); }
 });
 
 test('Profilo di base: fatti imparati e novità confermate diventano Aggiunte personali, il base resta intatto', async () => {
-  const bases = [{ version: 2, name: 'Columbia', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], naming: { template: '{Nome}', start: 1 } }];
+  const bases = [{ version: 2, name: 'Aurora', primaryLanguage: 'EN', languages: ['EN', 'FR', 'DE'], naming: { template: '{Nome}', start: 1 } }];
   const env = await setup({ bases });
   try {
     await env.connectPlugin({ existing: [], exports: {}, frame: { ...CTA_FRAME, textLayers: [...CTA_FRAME.textLayers, { id: 'f', key: 'legal', text: 'Legal footer', markup: 'Legal footer' }] },
       ui: { naming: { template: '{Nome}_{Lingua}', start: 1, date: '261109' }, baseNames: {}, sectionMode: 'none', targets: [], primary: 'EN' } });
-    await env.call('get_brand_profile', { name: 'Columbia' });
+    await env.call('get_brand_profile', { name: 'Aurora' });
     const excel = await writeFixture(join(env.dir, 'c.xlsx'), [{ name: 'Copy', rows: [['Field', 'EN', 'PT-BR'], ['Subject line', 'Gear up for winter', 'Prepare-se'], ['CTA', 'Shop now', 'Compre']] }]);
     await env.call('analyze_client_excel', { path: excel });
     await env.call('match_selection');
     assert.equal((await env.call('exclude_layers', { add: ['Legal footer'] })).data.savedIn, 'profilo brand');
-    assert.deepEqual(env.archive.additions('Columbia').ignoredLayers, ['Legal footer'], 'fatto imparato salvato subito come aggiunta');
+    assert.deepEqual(env.archive.additions('Aurora').ignoredLayers, ['Legal footer'], 'fatto imparato salvato subito come aggiunta');
     await env.call('match_selection');
     const done = (await env.call('generate_exports', { languages: ['PT_BR'], language_suffix: 'lang', section_mode: 'none' })).data;
     assert.match(done.profileSuggestion, /nome di output \{Nome\}_\{Lingua\}/);
@@ -766,37 +766,46 @@ test('Profilo di base: fatti imparati e novità confermate diventano Aggiunte pe
     assert.deepEqual(pending.changes.newLanguages, ['PT_BR']);
     const applied = (await env.call('apply_profile_updates', { settings: true })).data;
     assert.equal(applied.savedAs, 'Aggiunte personali');
-    const effective = env.archive.get('Columbia');
+    const effective = env.archive.get('Aurora');
     assert.deepEqual(effective.languages, ['EN', 'FR', 'DE', 'PT_BR']);
     assert.equal(effective.naming.template, '{Nome}_{Lingua}');
     assert.equal(effective.excelModels.length, 1);
-    assert.equal(env.archive.base('Columbia').languages.length, 3, 'il Profilo di base non cambia');
+    assert.equal(env.archive.base('Aurora').languages.length, 3, 'il Profilo di base non cambia');
   } finally { await env.close(); }
 });
 
 test('export e import via agente passano dal plugin: le novità su un Profilo di base diventano Aggiunte personali', async () => {
-  const bases = [{ version: 2, name: 'Columbia', revision: 3, primaryLanguage: 'EN', languages: ['EN', 'FR'] }];
+  const bases = [{ version: 2, name: 'Aurora', revision: 3, primaryLanguage: 'EN', languages: ['EN', 'FR'] }];
   const env = await setup({ bases });
   try {
-    await env.call('save_brand_profile', { name: 'Columbia', languages: ['EN', 'FR', 'PT_BR'] });
-    const path = join(env.dir, 'columbia.brand.json');
-    const exported = (await env.call('export_brand_profile', { name: 'Columbia', path })).data;
-    assert.deepEqual(exported.origin, { base: 'Columbia', revision: 3 });
+    await env.call('save_brand_profile', { name: 'Aurora', languages: ['EN', 'FR', 'PT_BR'] });
+    const path = join(env.dir, 'aurora.brand.json');
+    const exported = (await env.call('export_brand_profile', { name: 'Aurora', path })).data;
+    assert.deepEqual(exported.origin, { base: 'Aurora', revision: 3 });
     const file = JSON.parse(await readFile(path, 'utf8'));
     assert.deepEqual(file.profile.languages, ['EN', 'FR', 'PT_BR'], 'il file contiene il profilo completo');
+    assert.equal((await env.call('export_brand_profile', { name: 'Aurora', path })).isError, false, 'un profilo esportato si può riesportare');
+    // Mai sopra un file qualunque, né con un'estensione diversa o in una cartella che non c'è.
+    const { writeFile: write } = await import('node:fs/promises');
+    const other = join(env.dir, 'impostazioni.brand.json');
+    await write(other, '{"theme":"dark"}');
+    assert.match((await env.call('export_brand_profile', { name: 'Aurora', path: other })).text, /non è un profilo esportato/);
+    assert.equal(await readFile(other, 'utf8'), '{"theme":"dark"}');
+    assert.match((await env.call('export_brand_profile', { name: 'Aurora', path: join(env.dir, 'settings.json') })).text, /finire con \.brand\.json/);
+    assert.match((await env.call('export_brand_profile', { name: 'Aurora', path: join(env.dir, 'manca', 'p.brand.json') })).text, /Cartella di destinazione non trovata/);
 
     // un collega con solo il Profilo di base importa il file
-    env.archive.clearAdditions('Columbia');
+    env.archive.clearAdditions('Aurora');
     const imported = (await env.call('import_brand_profile', { path })).data;
     assert.deepEqual([imported.status, imported.as, imported.changes], ['imported', 'additions', 1]);
-    assert.deepEqual(env.archive.additions('Columbia').languages, ['PT_BR']);
+    assert.deepEqual(env.archive.additions('Aurora').languages, ['PT_BR']);
 
     // con aggiunte già presenti chiede unisci/sostituisci
-    await env.call('save_brand_profile', { name: 'Columbia', languages: ['EN', 'FR', 'PT_BR', 'IT'] });
+    await env.call('save_brand_profile', { name: 'Aurora', languages: ['EN', 'FR', 'PT_BR', 'IT'] });
     const choose = (await env.call('import_brand_profile', { path })).data;
     assert.deepEqual([choose.status, choose.choices], ['choose', ['merge', 'replace']]);
     assert.equal((await env.call('import_brand_profile', { path, mode: 'merge' })).data.status, 'imported');
-    assert.deepEqual(env.archive.get('Columbia').languages, ['EN', 'FR', 'PT_BR', 'IT']);
+    assert.deepEqual(env.archive.get('Aurora').languages, ['EN', 'FR', 'PT_BR', 'IT']);
 
     // un vecchio file versione 1 della cartella dei profili si importa come Profilo personale
     const legacy = join(env.dir, 'acme.json');
@@ -811,9 +820,9 @@ test('export e import via agente passano dal plugin: le novità su un Profilo di
   } finally { await env.close(); }
 });
 
-test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT viene dal Modello Excel del profilo', async () => {
-  const columbia = JSON.parse(await readFile(new URL('../brand-profiles/columbia.json', import.meta.url), 'utf8'));
-  const env = await setup({ bases: [columbia] });
+test('Excel d\'agenzia Aurora: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT viene dal Modello Excel del profilo', async () => {
+  const aurora = JSON.parse(await readFile(new URL('./fixtures/base-profiles/aurora.json', import.meta.url), 'utf8'));
+  const env = await setup({ bases: [aurora] });
   try {
     await env.connectPlugin({ existing: [], exports: {}, frame: { ...FRAME, textLayers: [
       { id: 'a', key: 'headline', text: 'Built for the cold', markup: 'Built for the cold' },
@@ -821,7 +830,7 @@ test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT 
     ] } });
     const header = ['English', 'Context', 'Character Limit', 'IE', 'FI', 'NL', 'BE EN', 'French', 'BE FR', 'German', 'AT', 'Spanish', 'Italian'];
     const row = (context, en) => [en, context, '', en, en, en, en, `${en} (fr)`, `${en} (fr-be)`, `${en} (de)`, `${en} (at)`, `${en} (es)`, `${en} (it)`];
-    const excel = await writeFixture(join(env.dir, 'ecom-53999-col-euuk.xlsx'), [{ name: 'EMAIL', rows: [header,
+    const excel = await writeFixture(join(env.dir, 'agenzia-aurora-euuk.xlsx'), [{ name: 'EMAIL', rows: [header,
       row('Subject Line Option 1 Launch', 'Winter is here'), row('Pre Header Option 1 Launch', 'Free shipping'), row('BLOCK ONE', ''),
       row('Headline Launch', 'Built for the cold'), row('Body Copy Launch', 'Stay warm'), row('CTA Launch', 'Shop now'), row('Link Launch', 'https://x')
     ] }]);
@@ -829,10 +838,10 @@ test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT 
     // l'analisi automatica sbaglia (IE e FI come lingue, AT non riconosciuto)…
     assert.ok(analysis.analysis.languageColumns.some(item => item.header === 'FI' && item.code === 'FI'));
     assert.equal(analysis.brand.decision, 'confirm-candidate');
-    assert.equal(analysis.brand.recognition.candidates[0].name, 'Columbia');
+    assert.equal(analysis.brand.recognition.candidates[0].name, 'Aurora');
 
-    // …il designer conferma Columbia e il profilo corregge la mappatura
-    const brand = (await env.call('get_brand_profile', { name: 'Columbia' })).data;
+    // …il designer conferma Aurora e il profilo corregge la mappatura
+    const brand = (await env.call('get_brand_profile', { name: 'Aurora' })).data;
     const changes = Object.fromEntries(brand.excelMapping.changes.map(item => [item.header, item.code]));
     assert.deepEqual(changes, { English: 'EN_GB', IE: 'EN_IE', FI: 'EN_FI', NL: 'EN_NL', 'BE EN': 'EN_BE', French: 'FR_FR', 'BE FR': 'FR_BE', German: 'DE_DE', AT: 'DE_AT', Spanish: 'ES_ES', Italian: 'IT_IT' });
 
@@ -849,7 +858,7 @@ test('Excel d\'agenzia Columbia: riconosciuto, e la mappatura IE/FI/NL/BE EN/AT 
     assert.equal(manual.profileMapping, undefined);
     await env.call('match_selection');
     await env.call('generate_exports', { languages: ['FR_BE', 'DE_AT'], language_suffix: 'lang-country', section_mode: 'none' });
-    // FR_BE e DE_AT sono varianti di lingue che Columbia ha già: nessuna "lingua nuova" da ricordare
+    // FR_BE e DE_AT sono varianti di lingue che Aurora ha già: nessuna "lingua nuova" da ricordare
     assert.deepEqual((await env.call('pending_profile_updates')).data.changes?.newLanguages ?? [], []);
   } finally { await env.close(); }
 });
@@ -887,5 +896,35 @@ test('prima di esportare chiede suffisso e section; con Lang il paese resta solo
       await env.call('generate_exports', { language_suffix: 'lang-country', section_mode: 'none', on_conflict: 'version' });
       assert.deepEqual(state.generated.naming.shortLanguages, []);
     } finally { FRAME.textLayers = original; }
+  } finally { await env.close(); }
+});
+
+test('stessa CTA in due righe con traduzioni diverse: ambiguo, generazione bloccata finché il designer non sceglie', async () => {
+  const env = await setup();
+  try {
+    await env.connectPlugin({ existing: [], exports: {}, ui: { naming: { template: '{Nome}', start: 1, date: '' }, baseNames: {}, sectionMode: 'none', targets: ['EN'], primary: 'IT' } });
+    const path = await writeFixture(join(env.dir, 'cta.xlsx'), [{ name: 'Copy', rows: [
+      ['ID', 'Italiano', 'English'],
+      ['H1', 'Scopri la nuova collezione', 'Discover the new collection'],
+      ['C1', 'Acquista ora', 'Shop now'],
+      ['C2', 'Acquista ora', 'Buy now']
+    ] }]);
+    await env.call('analyze_client_excel', { path });
+    const match = (await env.call('match_selection')).data;
+    assert.equal(match.summary.ambiguous, 1);
+    assert.deepEqual(match.ambiguous.map(item => [item.key, item.options.map(option => [option.row, option.id, option.translations.EN])]),
+      [['cta', [[3, 'C1', 'Shop now'], [4, 'C2', 'Buy now']]]]);
+    assert.ok(!match.exact.some(item => item.key === 'cta'));
+
+    const blocked = await env.call('generate_exports', { language_suffix: 'lang', section_mode: 'none' });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.text, /ambigui.*Hero_IT \/ cta → righe 3, 4/);
+
+    const confirmed = (await env.call('confirm_matches', { assign: [{ frame: 'Hero_IT', key: 'cta', row: 4 }] })).data;
+    assert.equal(confirmed.ambiguous, undefined);
+    const done = (await env.call('generate_exports', { language_suffix: 'lang', section_mode: 'none' })).data;
+    assert.equal(done.status, 'done');
+    const sent = (await env.connectPlugin()).calls.find(call => call.command === 'generate').payload;
+    assert.equal(sent.rows.find(row => row.key === 'cta').values.EN, 'Buy now');
   } finally { await env.close(); }
 });

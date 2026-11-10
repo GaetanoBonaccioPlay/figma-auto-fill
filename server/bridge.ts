@@ -1,12 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { AgentCommandName, BridgeRequest, BridgeResponse } from '../src/agent-protocol';
+import { PLUGIN_ALREADY_CONNECTED, type AgentCommandName, type BridgeRequest, type BridgeResponse, type BridgeWelcome } from '../src/agent-protocol';
 
 export const PLUGIN_NOT_CONNECTED = 'Il plugin Figma Auto Fill non è collegato: aprilo in Figma Desktop (Plugins → Development → Figma Auto Fill) e riprova';
 
 export interface PluginLink {
   readonly connected: boolean;
   readonly startError: string | null;
+  // Avviso da mostrare al designer (per esempio un secondo client rifiutato), o null.
+  readonly notice?: string | null;
   // Prende il collegamento col plugin se lo tiene un'altra istanza del server (vedi Bridge.claim).
   claim?(): Promise<void>;
   request<T = unknown>(command: AgentCommandName, payload?: unknown, timeoutMs?: number): Promise<T>;
@@ -14,10 +19,53 @@ export interface PluginLink {
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 
-// Saluto con cui un'altra istanza del server chiede di cedere la porta.
+// Saluto con cui un'altra istanza del server chiede di cedere la porta. Il segreto, in un file leggibile solo
+// dall'utente, distingue un'istanza del server da una pagina web: anche un iframe sandbox manda l'origine "null".
 const SERVER_HELLO = 'figma-auto-fill-server';
-type YieldRequest = { hello: typeof SERVER_HELLO; action: 'yield' };
+type YieldRequest = { hello: typeof SERVER_HELLO; action: 'yield'; secret: string };
 type YieldReply = { yielded: boolean; busy?: boolean };
+
+export const DEFAULT_SECRET_FILE = join(homedir(), '.figma-auto-fill', 'bridge-secret');
+// Per quanto tempo bridge_status riporta un client rifiutato.
+const NOTICE_MS = 10 * 60_000;
+
+// Hello entro cui una connessione deve presentarsi, altrimenti si chiude.
+const HELLO_TIMEOUT_MS = 5000;
+
+// Il file si crea scrivendo un temporaneo e collegandolo con link(): l'operazione è atomica e fallisce se il file
+// esiste già, così due istanze che partono insieme non leggono mai un file a metà e vince la prima.
+async function loadSecret(file: string): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      const secret = (await readFile(file, 'utf8')).trim();
+      if (secret) return secret;
+      throw new Error(`Segreto vuoto in ${file}: cancellalo e riavvia Claude`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    const secret = randomBytes(32).toString('hex');
+    const temporary = `${file}.${process.pid}-${randomBytes(4).toString('hex')}`;
+    try {
+      await writeFile(temporary, `${secret}\n`, { mode: 0o600 });
+      await link(temporary, file);
+      return secret;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      // un'altra istanza l'ha appena creato: si rilegge il suo
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+  throw new Error(`Segreto non leggibile: ${file}`);
+}
+
+const sameSecret = (a: unknown, b: string): boolean => {
+  if (typeof a !== 'string' || !b) return false;
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+};
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -34,9 +82,39 @@ export class Bridge implements PluginLink {
   private listening: Promise<boolean> | null = null;
   private retryTimer: NodeJS.Timeout | null = null;
   private closed = false;
+  private secretValue: Promise<string> | null = null;
+  private rejectedAt = 0;
+  // Le presentazioni dei plugin si valutano una alla volta: due hello quasi insieme non si scavalcano.
+  private adopting: Promise<void> = Promise.resolve();
+  private secretError: string | null = null;
   startError: string | null = null;
 
-  constructor(private readonly options: { port: number; timeoutMs?: number; retryMs?: number; pluginWaitMs?: number }) {}
+  constructor(private readonly options: {
+    port: number; timeoutMs?: number; retryMs?: number; pluginWaitMs?: number;
+    // Segreto condiviso tra le istanze del server per cedersi la porta (default: file nella home, creato al primo avvio).
+    secret?: string; secretFile?: string;
+    // Tempo per cui il plugin già collegato deve rispondere al ping per restare il plugin in uso.
+    livenessMs?: number;
+  }) {}
+
+  get notice(): string | null {
+    if (!this.rejectedAt || Date.now() - this.rejectedAt > NOTICE_MS) return null;
+    return 'Un secondo client si è presentato come plugin ed è stato rifiutato, perché ne era già collegato un altro. '
+      + 'Se il plugin è aperto in due file Figma è normale: chiudi quello che non usi. Se è aperto in un solo file, '
+      + 'potrebbe essersi collegata una pagina web: chiudi le schede del browser che non conosci e riapri il plugin.';
+  }
+
+  // Senza segreto leggibile (home non scrivibile) la cessione della porta resta disattivata per questa chiamata,
+  // e si riprova alla successiva: chi è in attesa prende comunque la porta quando l'altra istanza si chiude.
+  private secret(): Promise<string> {
+    if (this.options.secret !== undefined) return Promise.resolve(this.options.secret);
+    this.secretValue ??= loadSecret(this.options.secretFile ?? DEFAULT_SECRET_FILE).catch(error => {
+      this.secretValue = null;
+      this.secretError = (error as Error).message;
+      return '';
+    });
+    return this.secretValue;
+  }
 
   get connected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -99,7 +177,9 @@ export class Bridge implements PluginLink {
   }
 
   // Chiede all'istanza che tiene la porta di cederla. "unreachable": nessuno risponde col nostro protocollo.
-  private askToYield(): Promise<'yielded' | 'busy' | 'unreachable'> {
+  private async askToYield(): Promise<'yielded' | 'busy' | 'unreachable'> {
+    const secret = await this.secret();
+    if (!secret) return 'unreachable';
     return new Promise(resolve => {
       let done = false;
       const finish = (result: 'yielded' | 'busy' | 'unreachable'): void => {
@@ -114,7 +194,7 @@ export class Bridge implements PluginLink {
       const ws = new WebSocket(`ws://127.0.0.1:${this.options.port}`);
       const timer = setTimeout(() => finish('unreachable'), 2000);
       ws.once('open', () => {
-        const request: YieldRequest = { hello: SERVER_HELLO, action: 'yield' };
+        const request: YieldRequest = { hello: SERVER_HELLO, action: 'yield', secret };
         ws.send(JSON.stringify(request));
       });
       ws.once('message', raw => {
@@ -144,7 +224,9 @@ export class Bridge implements PluginLink {
     if (!this.wss) {
       this.startError = answer === 'yielded'
         ? `Porta ${this.options.port} ceduta ma non riaperta in tempo: riprova`
-        : `Porta ${this.options.port} occupata da un processo che non la cede (una versione vecchia del server o un altro programma). Controlla con: lsof -i :${this.options.port}`;
+        : this.secretError
+          ? `Porta ${this.options.port} di un'altra sessione, ma il segreto per fargliela cedere non è disponibile (${this.secretError})`
+          : `Porta ${this.options.port} occupata da un processo che non la cede (una versione vecchia del server o un altro programma). Controlla con: lsof -i :${this.options.port}`;
       this.scheduleRetry();
       return;
     }
@@ -163,6 +245,7 @@ export class Bridge implements PluginLink {
     if (!wss) return;
     this.wss = null;
     this.socket = null;
+    this.failAll(new Error('Il collegamento col plugin è passato a un\'altra sessione di Claude durante la richiesta'));
     for (const client of wss.clients) client.terminate();
     wss.close();
     this.startError = 'Il collegamento col plugin è passato a un\'altra sessione di Claude: questa sessione lo riprende appena serve';
@@ -171,31 +254,71 @@ export class Bridge implements PluginLink {
 
   private accept(socket: WebSocket): void {
     let identified = false;
+    // Una connessione che non si presenta non resta aperta per sempre.
+    const helloTimer = setTimeout(() => { if (!identified) socket.close(); }, HELLO_TIMEOUT_MS);
+    helloTimer.unref();
     socket.on('message', raw => {
       let message: unknown;
       try { message = JSON.parse(String(raw)); } catch { return; }
       if (!identified) {
-        const hello = message as { hello?: string; action?: string };
-        if (hello.hello === SERVER_HELLO && hello.action === 'yield') {
-          // Mai a metà di un comando: l'altra istanza riproverà.
-          const busy = this.pending.size > 0;
-          const reply: YieldReply = busy ? { yielded: false, busy: true } : { yielded: true };
-          socket.send(JSON.stringify(reply), () => { if (busy) socket.close(); else this.release(); });
-          return;
-        }
-        if (hello.hello !== 'figma-auto-fill-plugin') { socket.close(); return; }
         identified = true;
-        const previous = this.socket;
-        this.socket = socket;
-        if (previous && previous !== socket) previous.close();
+        clearTimeout(helloTimer);
+        const hello = message as { hello?: string; action?: string; secret?: unknown };
+        if (hello.hello === SERVER_HELLO && hello.action === 'yield') { void this.answerYield(socket, hello.secret); return; }
+        if (hello.hello !== 'figma-auto-fill-plugin') { socket.close(); return; }
+        this.adopting = this.adopting.then(() => this.adopt(socket), () => this.adopt(socket));
         return;
       }
-      this.settle(message as BridgeResponse);
+      if (socket === this.socket) this.settle(message as BridgeResponse);
     });
     socket.on('close', () => {
       if (this.socket !== socket) return;
       this.socket = null;
       this.failAll(new Error('Il plugin si è scollegato durante la richiesta'));
+    });
+  }
+
+  // Mai a metà di un comando (l'altra istanza riproverà), e solo a un'istanza del server che conosce il segreto.
+  private async answerYield(socket: WebSocket, secret: unknown): Promise<void> {
+    if (!sameSecret(secret, await this.secret())) { socket.close(); return; }
+    const busy = this.pending.size > 0;
+    const reply: YieldReply = busy ? { yielded: false, busy: true } : { yielded: true };
+    socket.send(JSON.stringify(reply), () => { if (busy) socket.close(); else this.release(); });
+  }
+
+  // Un nuovo plugin prende il posto di quello collegato solo se quello non risponde più al ping: una pagina web che
+  // si presenta come plugin non può scalzare il plugin vero (e due file Figma aperti non si rubano il collegamento).
+  private async adopt(socket: WebSocket): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const previous = this.socket;
+    if (previous && previous !== socket) {
+      if (previous.readyState === WebSocket.OPEN && await this.isAlive(previous)) {
+        this.rejectedAt = Date.now();
+        socket.close(PLUGIN_ALREADY_CONNECTED, 'Un altro plugin è già collegato');
+        return;
+      }
+      // Morto o in chiusura: le sue richieste non avranno risposta.
+      if (this.socket === previous) {
+        this.socket = null;
+        this.failAll(new Error('Il plugin si è scollegato durante la richiesta'));
+      }
+      previous.terminate();
+    }
+    if (socket.readyState !== WebSocket.OPEN || !this.wss) return;
+    this.socket = socket;
+    const welcome: BridgeWelcome = { welcome: 'figma-auto-fill-server' };
+    socket.send(JSON.stringify(welcome));
+  }
+
+  private isAlive(socket: WebSocket): Promise<boolean> {
+    return new Promise(resolve => {
+      const done = (alive: boolean): void => { clearTimeout(timer); socket.off('pong', onPong); socket.off('close', onClose); resolve(alive); };
+      const onPong = (): void => done(true);
+      const onClose = (): void => done(false);
+      const timer = setTimeout(() => done(false), this.options.livenessMs ?? 1000);
+      socket.on('pong', onPong);
+      socket.on('close', onClose);
+      try { socket.ping(); } catch { done(false); }
     });
   }
 

@@ -15,8 +15,8 @@ Un modulo puro estrae il Modello Excel da un foglio analizzato: nome del foglio,
 ## Acceptance criteria
 
 - [ ] Il Modello Excel estratto non contiene testi delle colonne lingua né ID.
-- [ ] Un Excel Columbia con foglio rinominato viene ancora riconosciuto come Columbia grazie alle Etichette ricorrenti.
-- [ ] Un Excel Columbia e uno The North Face non vengono confusi.
+- [ ] Un Excel Aurora con foglio rinominato viene ancora riconosciuto come Aurora grazie alle Etichette ricorrenti.
+- [ ] Un Excel Aurora e uno Borealis non vengono confusi.
 - [ ] Un Excel sconosciuto dà "nessun candidato" e la sessione prosegue senza Brand.
 - [ ] Profilo selezionato nel plugin diverso dal candidato: entrambi nel risultato, nessuna scelta automatica.
 - [ ] Test sui moduli puri (seam 2) ed end-to-end MCP (seam 1).

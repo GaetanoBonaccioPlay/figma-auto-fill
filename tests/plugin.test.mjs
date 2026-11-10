@@ -2,10 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { build } from 'esbuild';
+import { loadBaseProfiles } from '../scripts/base-profiles.mjs';
+import { validateProfile } from '../dist/profiles.mjs';
 
 const code = await readFile(new URL('../dist/code.js', import.meta.url), 'utf8');
 
-function pluginHarness({ existingExport = false, failOnWrite = false, autoRenameText = false } = {}) {
+// Il bundle distribuito non ha Profili di base (brand-profiles/ è vuota): per provarli si compila il plugin
+// con i profili di fantasia di tests/fixtures, come fa scripts/build.mjs con brand-profiles/.
+const withBaseProfiles = await (async () => {
+  const fixtures = await loadBaseProfiles(new URL('./fixtures/base-profiles', import.meta.url).pathname, validateProfile);
+  const result = await build({
+    entryPoints: [new URL('../src/plugin.ts', import.meta.url).pathname], bundle: true, format: 'iife', target: 'es2017',
+    write: false, logLevel: 'silent', define: { __BASE_PROFILES__: JSON.stringify(fixtures) }
+  });
+  return result.outputFiles[0].text;
+})();
+
+function pluginHarness({ existingExport = false, failOnWrite = false, autoRenameText = false, source = code } = {}) {
   let nextId = 10;
   const messages = [];
   const loadedFonts = [];
@@ -99,7 +113,7 @@ function pluginHarness({ existingExport = false, failOnWrite = false, autoRename
     viewport: { scrollAndZoomIntoView() {} }
   };
   if (existingExport) figma.root.children.push(new Page('EXPORT', [new Frame('260717_Hero_EN', [])]));
-  vm.runInNewContext(code, { figma, __html__: '' });
+  vm.runInNewContext(source, { figma, __html__: '' });
   return { figma, sourceText, sourceFrame, messages, loadedFonts, storage };
 }
 
@@ -736,56 +750,56 @@ const profileRequest = async (figma, messages, request) => {
 };
 
 test('all\'avvio la UI riceve i Profili di base compilati nel plugin', async () => {
-  const { figma, messages } = pluginHarness();
+  const { figma, messages } = pluginHarness({ source: withBaseProfiles });
   await figma.ui.onmessage({ kind: 'ready' });
   const state = messages.find(message => message.kind === 'profiles-state');
-  assert.deepEqual(Array.from(state.profiles, item => [item.name, item.origin]), [['Columbia', 'base'], ['The North Face', 'base']]);
+  assert.deepEqual(Array.from(state.profiles, item => [item.name, item.origin]), [['Aurora', 'base'], ['Borealis', 'base']]);
   assert.equal(state.selected, null);
   assert.deepEqual(Array.from(state.profiles[1].languages), ['EN', 'DE', 'FR', 'ES', 'NL', 'IT', 'PL', 'PT', 'SV', 'DA', 'CS']);
 });
 
 test('Profili personali e Aggiunte personali restano in clientStorage tra un riavvio e l\'altro', async () => {
-  const first = pluginHarness();
+  const first = pluginHarness({ source: withBaseProfiles });
   await first.figma.ui.onmessage({ kind: 'ready' });
-  await profileRequest(first.figma, first.messages, { action: 'create', name: 'Nike' });
-  const columbia = (await profileRequest(first.figma, first.messages, { action: 'get', name: 'Columbia' })).profile;
-  await profileRequest(first.figma, first.messages, { action: 'save', profile: { ...columbia, ignoredLayers: ['Legal footer'] } });
-  await profileRequest(first.figma, first.messages, { action: 'select', name: 'Nike' });
+  await profileRequest(first.figma, first.messages, { action: 'create', name: 'Delta' });
+  const aurora = (await profileRequest(first.figma, first.messages, { action: 'get', name: 'Aurora' })).profile;
+  await profileRequest(first.figma, first.messages, { action: 'save', profile: { ...aurora, ignoredLayers: ['Legal footer'] } });
+  await profileRequest(first.figma, first.messages, { action: 'select', name: 'Delta' });
   const broadcast = first.messages.filter(message => message.kind === 'profiles-state').at(-1);
-  assert.equal(broadcast.selected, 'Nike');
-  assert.equal(broadcast.applied.name, 'Nike', 'la UI riceve il profilo appena selezionato');
+  assert.equal(broadcast.selected, 'Delta');
+  assert.equal(broadcast.applied.name, 'Delta', 'la UI riceve il profilo appena selezionato');
   const stored = JSON.parse(JSON.stringify(first.storage.get('autoFillProfilesV1')));
-  assert.deepEqual(stored.personal.map(item => item.name), ['Nike']);
-  assert.deepEqual(stored.additions.map(item => [item.base, item.ignoredLayers]), [['Columbia', ['Legal footer']]]);
+  assert.deepEqual(stored.personal.map(item => item.name), ['Delta']);
+  assert.deepEqual(stored.additions.map(item => [item.base, item.ignoredLayers]), [['Aurora', ['Legal footer']]]);
 
   // riavvio: stesso spazio di archiviazione, nuovo codice del plugin
-  const second = pluginHarness();
+  const second = pluginHarness({ source: withBaseProfiles });
   second.storage.set('autoFillProfilesV1', stored);
   await second.figma.ui.onmessage({ kind: 'ready' });
   const state = second.messages.find(message => message.kind === 'profiles-state');
-  assert.equal(state.selected, 'Nike');
-  assert.deepEqual(Array.from(state.profiles, item => [item.name, item.origin, item.hasAdditions]), [['Columbia', 'base', true], ['The North Face', 'base', false], ['Nike', 'personal', false]]);
-  const effective = (await profileRequest(second.figma, second.messages, { action: 'get', name: 'Columbia' })).profile;
+  assert.equal(state.selected, 'Delta');
+  assert.deepEqual(Array.from(state.profiles, item => [item.name, item.origin, item.hasAdditions]), [['Aurora', 'base', true], ['Borealis', 'base', false], ['Delta', 'personal', false]]);
+  const effective = (await profileRequest(second.figma, second.messages, { action: 'get', name: 'Aurora' })).profile;
   assert.deepEqual(Array.from(effective.ignoredLayers), ['Legal footer']);
-  await assert.rejects(profileRequest(second.figma, second.messages, { action: 'remove', name: 'Columbia' }), /Profilo di base/);
+  await assert.rejects(profileRequest(second.figma, second.messages, { action: 'remove', name: 'Aurora' }), /Profilo di base/);
 });
 
 test('l\'agente legge e scrive l\'archivio con il comando profiles del bridge, e la UI viene aggiornata', async () => {
-  const { figma, messages } = pluginHarness();
+  const { figma, messages } = pluginHarness({ source: withBaseProfiles });
   await figma.ui.onmessage({ kind: 'ready' });
   await figma.ui.onmessage({ kind: 'agent-command', id: 'a1', command: 'profiles', payload: { action: 'list' } });
   const list = messages.at(-1);
   assert.deepEqual([list.kind, list.id, list.ok], ['agent-result', 'a1', true]);
   assert.equal(list.data.profiles.length, 2);
-  await figma.ui.onmessage({ kind: 'agent-command', id: 'a2', command: 'profiles', payload: { action: 'select', name: 'The North Face' } });
+  await figma.ui.onmessage({ kind: 'agent-command', id: 'a2', command: 'profiles', payload: { action: 'select', name: 'Borealis' } });
   const state = messages.filter(message => message.kind === 'profiles-state').at(-1);
-  assert.deepEqual([state.selected, state.by], ['The North Face', 'agent']);
+  assert.deepEqual([state.selected, state.by], ['Borealis', 'agent']);
   await figma.ui.onmessage({ kind: 'agent-command', id: 'a3', command: 'profiles', payload: { action: 'get', name: 'Nessuno' } });
-  assert.match(messages.at(-1).error, /non trovato.*Columbia/);
+  assert.match(messages.at(-1).error, /non trovato.*Aurora/);
 });
 
 test('un Profilo di base non più distribuito diventa un Profilo personale e la UI lo segnala una volta', async () => {
-  const { figma, messages, storage } = pluginHarness();
+  const { figma, messages, storage } = pluginHarness({ source: withBaseProfiles });
   const snapshot = { version: 2, name: 'Vecchio Brand', previousNames: [], languages: ['EN'], glossary: [], ignoredLayers: [], confirmedMatches: [], excelModels: [] };
   storage.set('autoFillProfilesV1', { personal: [], additions: [{ base: 'Vecchio Brand', baseSnapshot: snapshot, languages: ['FR'] }], selected: 'Vecchio Brand' });
   await figma.ui.onmessage({ kind: 'ready' });

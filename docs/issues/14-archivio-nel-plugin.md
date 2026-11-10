@@ -14,7 +14,7 @@ Implementa l'ADR 0002. La build compila nel plugin i profili della cartella dei 
 
 ## Acceptance criteria
 
-- [ ] All'avvio il plugin espone Columbia e The North Face come Profili di base.
+- [ ] All'avvio il plugin espone Aurora e Borealis come Profili di base.
 - [ ] Un Profilo di base non valido fa fallire la build.
 - [ ] Un fatto imparato su un Profilo di base diventa un'Aggiunta personale e sopravvive al riavvio del plugin.
 - [ ] `list_brand_profiles` restituisce gli stessi profili che vede il plugin; il profilo scelto dall'agente risulta selezionato nel plugin e viceversa.

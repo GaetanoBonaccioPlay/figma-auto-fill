@@ -11,6 +11,11 @@ export async function loadBaseProfiles(dir, validateProfile) {
   for (const file of files) {
     try {
       const profile = validateProfile(JSON.parse(await readFile(join(dir, file), 'utf8')));
+      // Gli Abbinamenti confermati contengono i testi del cliente (livello Figma e riga dell'Excel): restano nei profili
+      // personali dei designer e non finiscono nel repository né nel plugin distribuito.
+      if (profile.confirmedMatches.length) {
+        throw new Error(`confirmedMatches deve essere vuoto: contiene testi del cliente (${profile.confirmedMatches.length} voci). Svuotalo prima di promuovere il profilo`);
+      }
       if (profiles.some(item => item.name.toLowerCase() === profile.name.toLowerCase())) throw new Error(`nome "${profile.name}" già usato da un altro Profilo di base`);
       profiles.push(profile);
     } catch (error) {

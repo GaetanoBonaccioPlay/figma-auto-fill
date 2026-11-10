@@ -2,6 +2,7 @@ import { rename, realpath, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import ExcelJS from 'exceljs';
 import { escapeMarkup, parseMarkup, resolveValue, type FrameInfo, type TranslationRow } from '../src/core';
+import { cellText, columnLetter } from './excel-analyze';
 import { normalizeText, type ExcelRow, type LayerRef } from './match';
 
 // Markup del plugin ⇄ testo di cella. Una cella con tag di stile resta markup, altrimenti è testo semplice.
@@ -157,13 +158,51 @@ export async function assertSafeOutput(input: string, output: string, allowOverw
   }
 }
 
+type MergeRange = { top: number; left: number; bottom: number; right: number };
+
+// ExcelJS non espone l'elenco delle celle unite (sheet.model lo ricostruisce serializzando tutto il foglio):
+// si legge la mappa interna, in sola lettura. ExcelJS 4.4 è l'ultima versione e un test copre questo accesso.
+function mergedRanges(sheet: ExcelJS.Worksheet): MergeRange[] {
+  const merges = (sheet as unknown as { _merges?: Record<string, MergeRange | undefined> })._merges ?? {};
+  return Object.values(merges).filter((range): range is MergeRange => Boolean(range))
+    .map(({ top, left, bottom, right }) => ({ top, left, bottom, right }));
+}
+
+const rangeAddress = (range: MergeRange): string =>
+  `${columnLetter(range.left)}${range.top}:${columnLetter(range.right)}${range.bottom}`;
+
+// Toglie tutte le righe dopo `last`. spliceRows di ExcelJS non sa togliere un blocco che arriva in fondo al foglio (sposta
+// l'ultima riga e lascia le altre) e, chiamato riga per riga, rifà ogni volta il giro fino all'ultima riga: con un foglio
+// formattato fino in fondo (1.048.576 righe) servirebbero ore. Si accorcia l'elenco interno delle righe, come fa ExcelJS
+// stesso con le righe vuote in coda (_lastRowNumber); un test copre questo accesso. Senza l'elenco, il giro lento.
+function removeRowsAfter(sheet: ExcelJS.Worksheet, last: number): void {
+  const rows = (sheet as unknown as { _rows?: unknown[] })._rows;
+  if (Array.isArray(rows)) { if (rows.length > last) rows.length = last; return; }
+  for (let row = sheet.rowCount; row > last; row--) sheet.spliceRows(row, 1);
+}
+
+const isFormula = (value: ExcelJS.CellValue): value is ExcelJS.CellFormulaValue | ExcelJS.CellSharedFormulaValue =>
+  value !== null && typeof value === 'object' && ('formula' in value || 'sharedFormula' in value);
+
+export type CopyNotes = {
+  // Celle con formula nelle righe tenute, con l'indirizzo che hanno nella copia: i riferimenti non vengono aggiornati
+  // e puntano ancora alle righe dell'Excel originale.
+  formulaCells: string[];
+  // Celle unite che attraversano righe tolte: nella copia restano unite solo le righe tenute.
+  reducedMerges: string[];
+  conditionalFormatting: boolean;
+};
+
 export async function writeUpdatedWorkbook(options: {
   input: string; output: string; sheet: string; plan: UpdatePlan; idColumn?: number;
   // Con keepRows la copia contiene solo l'intestazione (righe fino a headerRow) e queste righe: le altre vengono tolte.
   keepRows?: number[]; headerRow?: number;
+  // Ultima riga dell'Excel da cui planUpdates ha numerato le righe aggiunte (newRows): la prima va subito dopo le righe
+  // tenute. Va passata la stessa usata dal piano, altrimenti due righe aggiunte possono finire nella stessa riga.
+  appendAfter?: number;
   // true solo per una copia già generata da noi (vedi isGeneratedCopy): l'originale non si sovrascrive mai
   allowOverwrite?: boolean;
-}): Promise<{ removedRows: number }> {
+}): Promise<{ removedRows: number; copyNotes: CopyNotes | null }> {
   await assertSafeOutput(options.input, options.output, options.allowOverwrite ?? false);
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(options.input);
@@ -172,19 +211,71 @@ export async function writeUpdatedWorkbook(options: {
   // Le righe usate salgono a coprire quelle non usate, copiando cella per cella valore, stile e nota
   // (spliceRows di ExcelJS perde le note); poi si scrive con i numeri di riga rimappati.
   const rowMap = new Map<number, number>();
-  const originalTotal = sheet.rowCount;
+  const header = options.headerRow ?? 1;
+  let appendAfter = 0;
+  let keptRows = 0;
   let removedRows = 0;
+  let copyNotes: CopyNotes | null = null;
   if (options.keepRows) {
-    const header = options.headerRow ?? 1;
-    const total = sheet.rowCount;
+    // Le righe solo formattate dopo l'ultimo valore non contano: un foglio formattato fino in fondo ne dichiara 1.048.576.
+    // total: ultima riga con un valore qualsiasi (va tolta anche se contiene solo spazi). lastText: ultima riga con testo,
+    // la stessa regola di readSheets da cui il piano numera le righe aggiunte, se appendAfter non è indicato.
+    let total = header;
+    let lastText = header;
+    sheet.eachRow({ includeEmpty: false }, (row, number) => {
+      if (number > total && (row.values as unknown[]).some(value => value !== null && value !== undefined && value !== '')) total = number;
+      row.eachCell({ includeEmpty: false }, cell => { if (number > lastText && cellText(cell).trim()) lastText = number; });
+    });
+    appendAfter = options.appendAfter ?? lastText;
     const keep = [...new Set(options.keepRows)].filter(row => row > header && row <= total).sort((a, b) => a - b);
-    keep.forEach((source, index) => {
-      const target = header + 1 + index;
-      rowMap.set(source, target);
-      if (source === target) return;
+    const kept = new Set(keep);
+    const targetOf = (row: number): number | undefined => row <= header ? row : rowMap.get(row);
+    keep.forEach((source, index) => rowMap.set(source, header + 1 + index));
+
+    // Celle unite: si sciolgono prima di spostare le righe e si ricreano sulle righe tenute.
+    const merges = mergedRanges(sheet).filter(range => range.bottom > header);
+    const restore: Array<{ range: MergeRange; value: ExcelJS.CellValue }> = [];
+    const reducedMerges: string[] = [];
+    for (const range of merges) {
+      const rows = Array.from({ length: range.bottom - range.top + 1 }, (_, i) => range.top + i).filter(row => row <= header || kept.has(row));
+      const master = sheet.getCell(range.top, range.left).value;
+      sheet.unMergeCells(range.top, range.left, range.bottom, range.right);
+      if (!rows.length) continue;
+      if (rows.length !== range.bottom - range.top + 1) reducedMerges.push(rangeAddress(range));
+      const top = targetOf(rows[0])!;
+      const bottom = targetOf(rows[rows.length - 1])!;
+      // Il valore sta nella cella in alto a sinistra: se quella riga è tolta, passa alla prima riga tenuta.
+      if (rows[0] !== range.top) sheet.getCell(rows[0], range.left).value = master;
+      restore.push({ range: { top, left: range.left, bottom, right: range.right }, value: master });
+    }
+
+    // Formule: i riferimenti non si riscrivono (si segnalano), ma una formula condivisa punta alla sua cella principale,
+    // che può essere tolta, e renderebbe il file illeggibile: tutte diventano formule semplici prima di spostarle.
+    // Una formula matrice (CSE) resta tale se il suo intervallo sta nella sua riga: diventando semplice cambierebbe risultato.
+    const formulas: Array<{ cell: ExcelJS.Cell; value: ExcelJS.CellValue }> = [];
+    for (const source of keep) {
+      const target = rowMap.get(source)!;
+      sheet.getRow(source).eachCell({ includeEmpty: false }, cell => {
+        if (!isFormula(cell.value)) return;
+        const raw = cell.value as { shareType?: string; ref?: string };
+        const range = raw.shareType === 'array' ? /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(raw.ref ?? '') : null;
+        const inRow = range && Number(range[2]) === source && (!range[4] || Number(range[4]) === source);
+        const value = inRow
+          ? { formula: cell.formula, result: cell.result, shareType: 'array', ref: `${range![1]}${target}${range![3] ? `:${range![3]}${target}` : ''}` }
+          : { formula: cell.formula, result: cell.result };
+        formulas.push({ cell, value: value as ExcelJS.CellValue });
+      });
+    }
+    for (const { cell, value } of formulas) cell.value = value;
+    const formulaCells = formulas.map(({ cell }) => `${columnLetter(Number(cell.col))}${rowMap.get(Number(cell.row))}`);
+    for (const source of keep) {
       const from = sheet.getRow(source);
+      const target = rowMap.get(source)!;
+      if (source === target) continue;
       const to = sheet.getRow(target);
-      for (let column = 1; column <= sheet.columnCount; column++) {
+      // Le colonne della riga, non sheet.columnCount: un foglio formattato fino all'ultima colonna ne dichiara 16.384.
+      const columns = Math.max(from.cellCount, to.cellCount);
+      for (let column = 1; column <= columns; column++) {
         const cell = from.getCell(column);
         const copy = to.getCell(column);
         copy.value = cell.value;
@@ -192,12 +283,28 @@ export async function writeUpdatedWorkbook(options: {
         copy.note = (cell.note ?? undefined) as ExcelJS.Cell['note'];
       }
       to.height = from.height;
-    });
-    for (let row = total; row > header + keep.length; row--) sheet.spliceRows(row, 1);
+    }
     removedRows = total - header - keep.length;
+    keptRows = keep.length;
+    removeRowsAfter(sheet, header + keep.length);
+    for (const { range } of restore) {
+      if (range.top === range.bottom && range.left === range.right) continue;
+      sheet.mergeCells(range.top, range.left, range.bottom, range.right);
+    }
+    const conditionalFormatting = Boolean((sheet as unknown as { conditionalFormattings?: unknown[] }).conditionalFormattings?.length);
+    if (formulaCells.length || reducedMerges.length || (conditionalFormatting && removedRows)) {
+      copyNotes = { formulaCells, reducedMerges, conditionalFormatting: conditionalFormatting && removedRows > 0 };
+    }
   }
-  // righe usate: nuova posizione; righe aggiunte in coda (oltre l'ultima originale): scalano delle righe tolte
-  const mapRow = (row: number): number => rowMap.get(row) ?? (row > originalTotal ? row - removedRows : row);
+  // Righe usate: la loro nuova posizione. Righe aggiunte (oltre appendAfter): in coda, subito dopo le righe tenute.
+  // Una scrittura su una riga che non è tra quelle tenute finirebbe su un'altra riga del cliente: si rifiuta.
+  const mapRow = (row: number): number => {
+    if (!options.keepRows) return row;
+    const mapped = rowMap.get(row);
+    if (mapped !== undefined) return mapped;
+    if (row > appendAfter) return header + keptRows + (row - appendAfter);
+    throw new Error(`Riga ${row}: non è tra le righe usate dai frame, quindi non è nella copia. Rifai l'abbinamento o usa only_used_rows: false`);
+  };
   const mark = (cell: ExcelJS.Cell, kind: string, note: string): void => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: FILL[kind] } };
     cell.note = note;
@@ -229,5 +336,5 @@ export async function writeUpdatedWorkbook(options: {
     await rm(temporary, { force: true });
     throw error;
   }
-  return { removedRows };
+  return { removedRows, copyNotes };
 }

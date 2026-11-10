@@ -1255,9 +1255,12 @@ renderFrames();
 renderLanguages();
 renderValidation();
 send({ kind: 'ready' });
-startAgentBridge(connected => {
+startAgentBridge((connected, status) => {
   const badge = element('agent-status');
-  badge.textContent = connected ? 'Agente collegato' : 'Agente non collegato';
+  badge.textContent = connected ? 'Agente collegato' : status.busy ? 'Agente in uso da un altro plugin' : 'Agente non collegato';
+  badge.title = status.busy
+    ? 'Il server MCP è già collegato al plugin aperto in un altro file Figma (o in un\'altra finestra): chiudi quello che non usi'
+    : 'Collegamento al server MCP locale';
   badge.classList.toggle('connected', connected);
 }, () => ({
   naming: naming(),
