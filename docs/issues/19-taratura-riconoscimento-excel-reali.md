@@ -16,7 +16,7 @@ Con gli Excel reali di Columbia e The North Face si tarano le soglie del riconos
 
 - [x] Ogni Excel reale disponibile viene riconosciuto come il proprio Brand e mai come l'altro.
 - [x] Columbia e The North Face versione 2 sono nel repository e passano la build.
-- [ ] Il collaudo manuale è annotato con eventuali correzioni.
+- [x] Il collaudo manuale è annotato con eventuali correzioni.
 
 ## Esito della taratura (2026-11-09)
 
@@ -58,3 +58,4 @@ User stories: 10–17, 23
 ## Collaudo manuale in Figma Desktop
 
 - 2026-11-09, apertura del plugin: Figma rifiutava il codice con `SyntaxError: possible import expression rejected around line 1`. Causa: il metodo dell'archivio chiamato come la parola chiave degli import, che nel bundle somiglia a un import dinamico. Corretto (`importFile`) e aggiunto un test che controlla il bundle con lo stesso schema del sandbox di Figma.
+- 2026-11-10, riapertura dopo la correzione: il plugin si apre e funziona in Figma Desktop (esito riportato dal designer).
