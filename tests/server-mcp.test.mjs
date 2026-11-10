@@ -119,6 +119,20 @@ test('espone gli strumenti e il prompt localizza-frame con i passi nell\'ordine 
   } finally { await env.close(); }
 });
 
+test('dice all\'agente che in Figma scrive solo il plugin: niente link del file né altri MCP Figma', async () => {
+  const env = await setup();
+  try {
+    const instructions = env.client.getInstructions() ?? '';
+    assert.match(instructions, /plugin/);
+    assert.match(instructions, /use_figma/);
+    assert.match(instructions, /link|file key|fileKey/i);
+    const text = (await env.client.getPrompt({ name: 'localizza-frame' })).messages[0].content.text;
+    assert.match(text, /use_figma/);
+    const tools = (await env.client.listTools()).tools;
+    assert.match(tools.find(tool => tool.name === 'generate_exports').description, /non serve il link/i);
+  } finally { await env.close(); }
+});
+
 test('Excel allegato alla chat: il server lo trova sul Mac dal nome del file, anche con il percorso cloud', async () => {
   const env = await setup({ plugin: false, searchRoots: dir => [join(dir, 'Downloads'), join(dir, 'Desktop')] });
   try {

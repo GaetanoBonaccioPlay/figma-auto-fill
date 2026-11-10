@@ -65,6 +65,7 @@ export function todayStamp(now = new Date()): string {
 }
 
 export const WORKFLOW = `Segui questi passi, uno alla volta, chiedendo conferma al designer dove indicato.
+REGOLA FIGMA: in Figma legge e scrive SOLO il plugin Figma Auto Fill, attraverso questi strumenti (get_selection, match_selection, generate_exports). Non serve il link né la chiave del file: non chiederli e non usare altri MCP Figma (use_figma, get_design_context, get_metadata...). Se serve cambiare un testo, correggi la traduzione (load_translations, save_ai_translations o l'Excel) e rilancia generate_exports; se il plugin non risponde, chiedi di aprirlo nel file giusto (bridge_status).
 REGOLA GENERALE: davanti a un'incongruenza (lingue del plugin diverse da quelle dell'Excel, testi o traduzioni mancanti, nomi o impostazioni che non tornano, risposte "conflict" o "confirm-languages") NON decidere da solo e non andare avanti: fai una domanda breve al designer, con una proposta consigliata, e agisci solo dopo la risposta.
 Il Brand è un aiuto, non un vincolo: si può lavorare senza Brand e quando c'è il suo Profilo brand suggerisce, ma vale sempre l'Excel che hai davanti.
 1. TRADUZIONI (EXCEL CLIENTE o chat) — chiedi da dove vengono le traduzioni; l'Excel sul Mac è facoltativo.
@@ -79,6 +80,13 @@ Il Brand è un aiuto, non un vincolo: si può lavorare senza Brand e quando c'è
 6. EXCEL AGGIORNATO — solo se le traduzioni vengono da un Excel sul Mac (analyze_client_excel); con load_translations salta questo passo. Chiama write_updated_excel. Di base la copia contiene SOLO le righe usate dai frame e non aggiunge i Livelli orfani (aggiungili con add_orphans solo se il designer lo chiede). Non sovrascrivere celle piene: mostra i conflitti e passa overwrite solo per quelle che il designer conferma.
 7. TRADUZIONE AI (facoltativa) — alla fine chiedi SOLO se il designer vuole tradurre le celle vuote (list_empty_cells ne dà il numero). Se sì, traduci rispettando il Glossario brand (se c'è un Brand), fai rivedere le traduzioni, salvale con save_ai_translations e rilancia generate_exports (e write_updated_excel se c'è un Excel sul Mac).
 8. REFERENCE — chiama pending_profile_updates. Senza Brand chiedi se salvare questo Excel come reference per la prossima volta (proponi suggestedName, il designer può cambiarlo). Con un Brand, se ci sono novità (Modello Excel, lingue, impostazioni usate diverse dal profilo), elencale in una riga e chiedi se ricordarle. Solo dopo un sì chiama apply_profile_updates; con un no il profilo non cambia.`;
+
+// Le legge il client all'avvio, anche senza il prompt localizza-frame: senza, l'agente ripiega sull'MCP ufficiale di Figma
+// (use_figma), che vuole il link del file e che il plugin non può dare.
+export const SERVER_INSTRUCTIONS = `Figma Auto Fill localizza i frame Figma tramite il plugin Figma Auto Fill aperto in Figma Desktop, collegato a questo server.
+In Figma legge e scrive SOLO il plugin, attraverso questi strumenti: get_selection per i frame selezionati, generate_exports per creare gli export con i testi tradotti. Non serve il link né la file key del file Figma: non chiederli al designer e non usare altri MCP Figma (use_figma, get_design_context, get_metadata...) per leggere o modificare i frame.
+Per cambiare un testo negli export correggi la traduzione (load_translations, save_ai_translations o l'Excel) e rilancia generate_exports. Se il plugin non risponde, controlla bridge_status e chiedi al designer di aprire il plugin nel file giusto.
+Per il dialogo completo segui il prompt localizza-frame.`;
 
 // Senza Brand e senza un indizio dai dati, la lingua della Colonna sorgente provvisoria.
 const FALLBACK_PRIMARY = 'EN';
@@ -95,7 +103,7 @@ export function createMcpServer(deps: {
   // Senza, l'Excel si legge dove si trova (test e usi programmatici).
   workingCopies?: WorkingCopies;
 }): McpServer {
-  const server = new McpServer({ name: 'figma-auto-fill', version: '1.0.0' });
+  const server = new McpServer({ name: 'figma-auto-fill', version: '1.0.0' }, { instructions: SERVER_INSTRUCTIONS });
   const session = newSession();
   const now = deps.now ?? (() => new Date());
   const profiles = new PluginProfiles(deps.bridge);
@@ -579,7 +587,7 @@ export function createMcpServer(deps: {
 
   // ---------- generazione in Figma ----------
   register('generate_exports',
-    'Fa generare al plugin le varianti linguistiche in EXPORT per i frame selezionati. Senza language_suffix o section_mode risponde "confirm-settings" con gli esempi di nome: chiedi al designer con AskUserQuestion e richiama passando le risposte. Se esistono già export con gli stessi nomi risponde "conflict": chiedi se sostituire o creare una nuova versione e richiama con on_conflict.',
+    'Fa generare al plugin le varianti linguistiche in EXPORT per i frame selezionati: è il plugin a scrivere i testi in Figma, quindi non serve il link del file né un altro MCP Figma. Senza language_suffix o section_mode risponde "confirm-settings" con gli esempi di nome: chiedi al designer con AskUserQuestion e richiama passando le risposte. Se esistono già export con gli stessi nomi risponde "conflict": chiedi se sostituire o creare una nuova versione e richiama con on_conflict.',
     {
       languages: z.array(z.string()).optional().describe('Lingue da generare (default: quelle con traduzioni nelle righe usate dai frame, vedi languages.needed)'),
       on_conflict: z.enum(['replace', 'version']).optional(),
