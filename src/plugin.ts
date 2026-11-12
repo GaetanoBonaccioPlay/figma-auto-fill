@@ -38,7 +38,7 @@ type PreparedUpdate = {
 
 figma.showUI(__html__, { width: 980, height: 780, themeColors: true });
 
-const DATA = { role: 'autoFillRole', group: 'autoFillGroup', language: 'autoFillLanguage', primary: 'autoFillPrimary', source: 'autoFillSourceId', textSource: 'autoFillTextSourceId', sectionMode: 'autoFillSectionMode' } as const;
+const DATA = { role: 'autoFillRole', group: 'autoFillGroup', language: 'autoFillLanguage', primary: 'autoFillPrimary', source: 'autoFillSourceId', textSource: 'autoFillTextSourceId', sectionMode: 'autoFillSectionMode', baseName: 'autoFillBaseName' } as const;
 const LANGUAGE_SETTINGS_KEY = 'autoFillLanguageSettingsV1';
 const PROFILES_KEY = 'autoFillProfilesV1';
 const BASE_PROFILES: BrandProfile[] = (typeof __BASE_PROFILES__ === 'undefined' ? [] : __BASE_PROFILES__).flatMap(item => {
@@ -60,12 +60,33 @@ function groupId(frame: FrameNode): string {
   return frame.getPluginData(DATA.group);
 }
 
-function tagFrame(frame: FrameNode, role: 'master' | 'locale', group: string, language: string, primary: string, sourceId: string): void {
+function tagFrame(frame: FrameNode, role: 'master' | 'locale', group: string, language: string, primary: string, sourceId: string, baseName: string): void {
   frame.setPluginData(DATA.role, role);
   frame.setPluginData(DATA.group, group);
   frame.setPluginData(DATA.language, language);
   frame.setPluginData(DATA.primary, primary);
   frame.setPluginData(DATA.source, sourceId);
+  frame.setPluginData(DATA.baseName, baseName);
+}
+
+// Il nome di un export è il modello applicato al nome base: ripartire dal nome del frame (Hero_en_1) rifarebbe
+// il modello sopra il modello (Hero_en_1_en_1) e non darebbe mai la collisione che porta a _v2.
+// Per questo l'export ricorda il nome base con cui è nato.
+function nameBase(name: string): string {
+  return stripLanguageSuffix(name.trim());
+}
+
+function exportBaseName(frame: FrameNode): string {
+  return frame.getPluginData(DATA.baseName) || nameBase(frame.name).replace(/_v\d+$/, '');
+}
+
+// Export creati prima che il plugin salvasse il nome base: lo si ricava dal frame sorgente, se c'è ancora.
+async function legacyExportBaseName(frame: FrameNode): Promise<string | null> {
+  const sourceId = frame.getPluginData(DATA.source);
+  if (!sourceId || sourceId === frame.id) return null;
+  const source = await figma.getNodeByIdAsync(sourceId);
+  if (!source || source.type !== 'FRAME' || source.removed) return null;
+  return (managedRole(source) ? exportBaseName(source) : nameBase(source.name)) || null;
 }
 
 function textNodes(frame: FrameNode): TextNode[] {
@@ -171,7 +192,7 @@ function selectionSnapshot(frames = selectedFrames()): FrameInfo[] {
       id: frame.id,
       name: frame.name,
       label: labels[index],
-      baseName: stripLanguageSuffix(frame.name),
+      baseName: managedRole(frame) ? exportBaseName(frame) : stripLanguageSuffix(frame.name),
       width: frame.width,
       height: frame.height,
       sourceLanguage: managedRole(frame) === 'master' ? frame.getPluginData(DATA.primary) || 'EN' : 'EN',
@@ -222,6 +243,12 @@ function exportSectionMode(master: FrameNode, outputs: FrameNode[]): 'none' | 'l
 
 async function selectionSnapshotWithExports(frames: FrameNode[]): Promise<FrameInfo[]> {
   const snapshot = selectionSnapshot(frames);
+  for (let index = 0; index < frames.length; index++) {
+    const frame = frames[index];
+    if (!managedRole(frame) || frame.getPluginData(DATA.baseName)) continue;
+    const legacy = await legacyExportBaseName(frame);
+    if (legacy) snapshot[index].baseName = legacy;
+  }
   const page = exportPage();
   if (!page || !frames.length) return snapshot;
   await page.loadAsync();
@@ -238,8 +265,8 @@ async function selectionSnapshotWithExports(frames: FrameNode[]): Promise<FrameI
     if (managedRole(frame)) continue;
     let candidates = masters.filter(node => node.getPluginData(DATA.source) === frame.id);
     if (!candidates.length) {
-      const base = stripLanguageSuffix(frame.name);
-      candidates = masters.filter(node => stripLanguageSuffix(node.name).replace(/_v\d+$/, '') === base);
+      const base = nameBase(frame.name);
+      candidates = masters.filter(node => exportBaseName(node) === base);
     }
     const latest = candidates.map((node, order) => ({ node, order }))
       .sort((a, b) => versionNumber(b.node.name) - versionNumber(a.node.name) || b.order - a.order)[0]?.node;
@@ -393,7 +420,7 @@ function orderCanvasLayers(container: LayerContainer, type: 'FRAME' | 'SECTION',
 
 function nameContexts(frames: FrameNode[], baseNames: Record<string, string>): Map<string, NameContext> {
   return new Map(frames.map((frame, index) => [frame.id, {
-    name: baseNames[frame.id] ?? stripLanguageSuffix(frame.name),
+    name: baseNames[frame.id] ?? (managedRole(frame) ? exportBaseName(frame) : stripLanguageSuffix(frame.name)),
     index, count: frames.length, width: frame.width, height: frame.height
   }]));
 }
@@ -579,7 +606,9 @@ async function generate(request: GenerateRequest): Promise<{ names: string[]; wa
             if (update) applyUpdate(copiedTexts[index], update);
           });
           tagFrame(master, 'master', oldMasterNode ? groupId(oldMasterNode) || master.id : master.id,
-            primary, primary, frame.getPluginData(DATA.source) || frame.id);
+            primary, primary, frame.getPluginData(DATA.source) || frame.id, nameBase(context.name));
+        } else {
+          master.setPluginData(DATA.baseName, nameBase(context.name));
         }
         selectedMasters.push(master);
         for (const language of targets.filter(code => code !== primary)) {
@@ -592,7 +621,7 @@ async function generate(request: GenerateRequest): Promise<{ names: string[]; wa
           clone.name = old?.name ?? groupNames?.get(language) ?? outputName(context, language, naming, occupied);
           clone.x = laneByLanguage.get(language)!;
           clone.y = old?.parent === section ? old.y : rowY;
-          tagFrame(clone, 'locale', groupId(master), language, primary, master.getPluginData(DATA.source));
+          tagFrame(clone, 'locale', groupId(master), language, primary, master.getPluginData(DATA.source), nameBase(context.name));
           const copiedTexts = textNodes(clone);
           const originals = textNodes(frame);
           tagTextSources(originals, copiedTexts, frame.name);
@@ -651,7 +680,9 @@ async function generate(request: GenerateRequest): Promise<{ names: string[]; wa
           if (update) applyUpdate(copiedTexts[index], update);
         });
         tagFrame(master, 'master', oldMasterNode ? groupId(oldMasterNode) || master.id : master.id,
-          primary, primary, frame.getPluginData(DATA.source) || frame.id);
+          primary, primary, frame.getPluginData(DATA.source) || frame.id, nameBase(context.name));
+      } else {
+        master.setPluginData(DATA.baseName, nameBase(context.name));
       }
       selectedMasters.push(master);
       const group = groupId(master);
@@ -664,7 +695,7 @@ async function generate(request: GenerateRequest): Promise<{ names: string[]; wa
         clone.name = old?.name ?? groupNames?.get(language) ?? outputName(context, language, naming, occupied);
         clone.x = master.x + columnX.get(language)!;
         clone.y = master.y;
-        tagFrame(clone, 'locale', group, language, primary, master.getPluginData(DATA.source));
+        tagFrame(clone, 'locale', group, language, primary, master.getPluginData(DATA.source), nameBase(context.name));
         const copiedTexts = textNodes(clone);
         const originals = textNodes(frame);
         tagTextSources(originals, copiedTexts, frame.name);

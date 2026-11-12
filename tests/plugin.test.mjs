@@ -578,6 +578,43 @@ test('dal MASTER una nuova versione conserva il gruppo precedente', async () => 
   assert.notEqual(newMaster.getPluginData('autoFillGroup'), master.getPluginData('autoFillGroup'));
 });
 
+// Riedizione dal MASTER con un modello in cui la lingua non chiude il nome ({Nome}_{Lingua}_{N↑}): il nome base
+// arriva dallo snapshot, come nella UI e nel flusso agente, e deve essere quello originale, non il nome dell'export.
+async function versionFromMaster({ forgetBaseName = false } = {}) {
+  const { figma, sourceFrame, messages } = pluginHarness();
+  const run = agent(figma, messages);
+  const naming = { template: '{Nome}_{Lingua}_{N↑}', start: 1, date: '' };
+  await figma.ui.onmessage({ ...request(sourceFrame.id), naming });
+  assert.deepEqual(Array.from(messages.at(-1).names), ['260717_Hero_en_1', '260717_Hero_nl_1']);
+  const page = figma.root.children.find(node => node.name === 'EXPORT');
+  const oldFrames = [...page.children];
+  const master = oldFrames.find(node => node.getPluginData('autoFillRole') === 'master');
+  if (forgetBaseName) for (const node of oldFrames) node.pluginData.delete('autoFillBaseName');
+  page.selection = [master];
+  const [snapshot] = (await run('snapshot')).data.frames;
+  assert.equal(snapshot.baseName, '260717_Hero');
+  const edit = {
+    ...request(master.id), naming, baseNames: { [master.id]: snapshot.baseName },
+    rows: [{ frame: master.name, key: 'headline', translate: true, values: { EN: 'New copy', NL: '' } }]
+  };
+  await figma.ui.onmessage({ kind: 'inspect', frameIds: [master.id], targets: ['EN', 'NL'], primary: 'EN', baseNames: edit.baseNames, naming });
+  assert.deepEqual(Array.from(messages.at(-1).replacements, item => item.name), ['260717_Hero_nl_1']);
+  await figma.ui.onmessage(edit);
+  assert.equal(messages.at(-1).kind, 'done', messages.at(-1).message);
+  assert.deepEqual(Array.from(messages.at(-1).names), ['260717_Hero_v2_en_1', '260717_Hero_v2_nl_1']);
+  assert.ok(oldFrames.every(node => !node.removed));
+  const v2 = page.children.find(node => node.name === '260717_Hero_v2_en_1');
+  assert.equal(v2.getPluginData('autoFillBaseName'), '260717_Hero');
+  page.selection = [v2];
+  assert.equal((await run('snapshot')).data.frames[0].baseName, '260717_Hero');
+  await figma.ui.onmessage({ ...edit, frameIds: [v2.id], baseNames: { [v2.id]: '260717_Hero' }, rows: [{ ...edit.rows[0], frame: v2.name }] });
+  assert.deepEqual(Array.from(messages.at(-1).names), ['260717_Hero_v3_en_1', '260717_Hero_v3_nl_1']);
+}
+
+test('dal MASTER una nuova versione usa il nome base originale anche se la lingua non chiude il nome', () => versionFromMaster());
+
+test('export creati prima del nome base salvato: dal MASTER lo si ricava dal frame sorgente', () => versionFromMaster({ forgetBaseName: true }));
+
 test('EN_GB usa EN come fallback anche quando la lingua principale è IT', async () => {
   const { figma, sourceFrame, messages } = pluginHarness();
   const input = request(sourceFrame.id);
