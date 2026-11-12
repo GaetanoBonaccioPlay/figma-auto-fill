@@ -54,6 +54,12 @@ function naming(): NamingOptions {
   return { template: state.nameTemplate, start: state.numberStart, date: TODAY };
 }
 
+// Lingua dei testi di un frame: quella scelta a mano nella card, altrimenti quella salvata nel MASTER,
+// altrimenti la lingua principale selezionata (così IT come principale mette i testi nella colonna IT).
+function frameSource(frame: FrameInfo): string {
+  return state.sourceLanguages.get(frame.id) ?? (frame.managedRole === 'master' ? frame.sourceLanguage : state.primary);
+}
+
 function nameContext(frame: FrameInfo, index: number): NameContext {
   return {
     name: state.baseNames.get(frame.id) ?? frame.baseName,
@@ -141,7 +147,7 @@ function renderFrames(): void {
     const source = document.createElement('label');
     source.textContent = 'Lingua modello';
     const sourceInput = document.createElement('input');
-    sourceInput.value = state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage;
+    sourceInput.value = frameSource(frame);
     sourceInput.maxLength = 5;
     sourceInput.disabled = frame.managedRole === 'master';
     sourceInput.addEventListener('change', () => {
@@ -218,7 +224,7 @@ function languageChip(language: string, countryName?: string): HTMLElement {
     remove.type = 'button';
     remove.className = 'remove-language';
     remove.setAttribute('aria-label', `Rimuovi ${language}`);
-    const sourceCodes = state.frames.map(frame => state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage);
+    const sourceCodes = state.frames.map(frame => frameSource(frame));
     const required = language === state.primary || sourceCodes.includes(language) || [...state.targets, state.primary, ...sourceCodes].some(code => code.includes('_') && code.split('_')[0] === language);
     remove.disabled = required || !state.settingsLoaded;
     remove.title = required ? 'Lingua principale, modello o fallback di una variante: modifica prima la selezione' : `Rimuovi ${language}`;
@@ -350,13 +356,13 @@ function ensureLanguages(codes: string[]): void {
 
 function workbookLanguages(): string[] {
   const codes = new Set<string>([...state.targets, state.primary]);
-  for (const frame of state.frames) codes.add(state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage);
+  for (const frame of state.frames) codes.add(frameSource(frame));
   for (const code of [...codes]) if (code.includes('_')) codes.add(code.split('_')[0]);
   return [...codes];
 }
 
 function visibleLanguages(): string[] {
-  const sourceCodes = state.frames.map(frame => state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage);
+  const sourceCodes = state.frames.map(frame => frameSource(frame));
   const parentCodes = workbookLanguages().filter(code => [...state.targets, state.primary, ...sourceCodes].some(selected => selected.includes('_') && selected.split('_')[0] === code));
   return orderColumns(state.languages, state.columnOrder).filter(code => state.rows.some(row => code in row.values) && (state.importedName !== 'locals' || state.targets.has(code) || code === state.primary || sourceCodes.includes(code) || parentCodes.includes(code)));
 }
@@ -366,7 +372,7 @@ function generateLocals(): void {
   if (!state.targets.size) throw new Error('Seleziona almeno una lingua da generare');
   const languages = workbookLanguages();
   ensureLanguages(languages);
-  state.rows = rowsFromFrames(state.frames, languages, state.rows, state.sourceLanguages);
+  state.rows = rowsFromFrames(state.frames, languages, state.rows, new Map(state.frames.map(frame => [frame.id, frameSource(frame)])));
   ensureLanguages(state.rows.flatMap(row => Object.keys(row.values)));
   state.importedName = 'locals';
   renderPreview();
@@ -587,6 +593,10 @@ function moveLanguage(code: string, target: string, after: boolean): void {
 
 // Pointer-driven drag (not native HTML5 DnD) so the closed-hand cursor, the
 // floating label and the drop marker stay under our control while dragging.
+// Listeners sit on window (not only on the captured header): in Figma the plugin
+// iframe can lose pointer capture, and a release outside the iframe never arrives,
+// so a move without the button pressed, a lost capture or a blur also end the drag.
+// Near the edges the table keeps scrolling on its own while the pointer stays still.
 function languageHeader(language: string, col: number): HTMLTableCellElement {
   const th = document.createElement('th');
   th.scope = 'col';
@@ -600,8 +610,11 @@ function languageHeader(language: string, col: number): HTMLTableCellElement {
     const table = th.closest('table')!;
     const scroller = element('preview');
     const startX = event.clientX;
+    let lastX = event.clientX;
     let ghost: HTMLElement | null = null;
     let drop: { target: string; after: boolean } | null = null;
+    let scrollFrame = 0;
+    let done = false;
     const headers = (): HTMLTableCellElement[] => Array.from(table.querySelectorAll<HTMLTableCellElement>('th.language-header'));
     const clearMarks = (): void => headers().forEach(header => header.classList.remove('drop-before', 'drop-after'));
     const begin = (): void => {
@@ -613,30 +626,52 @@ function languageHeader(language: string, col: number): HTMLTableCellElement {
       ghost.textContent = language;
       document.body.append(ghost);
     };
-    const move = (moveEvent: PointerEvent): void => {
-      if (!ghost && Math.abs(moveEvent.clientX - startX) < 4) return;
-      if (!ghost) begin();
-      ghost!.style.left = `${moveEvent.clientX}px`;
-      ghost!.style.top = `${moveEvent.clientY}px`;
-      const box = scroller.getBoundingClientRect();
-      if (moveEvent.clientX < box.left + 40) scroller.scrollLeft -= 16;
-      else if (moveEvent.clientX > box.right - 40) scroller.scrollLeft += 16;
+    const updateDrop = (): void => {
       clearMarks();
       drop = null;
       for (const header of headers()) {
         const rect = header.getBoundingClientRect();
-        if (moveEvent.clientX < rect.left || moveEvent.clientX > rect.right) continue;
-        const after = moveEvent.clientX > rect.left + rect.width / 2;
+        if (lastX < rect.left || lastX > rect.right) continue;
+        const after = lastX > rect.left + rect.width / 2;
         drop = { target: header.dataset.language!, after };
         if (drop.target !== language) header.classList.add(after ? 'drop-after' : 'drop-before');
         break;
       }
     };
+    const autoScroll = (): void => {
+      scrollFrame = 0;
+      if (done || !ghost) return;
+      const box = scroller.getBoundingClientRect();
+      const edge = 48;
+      const speed = lastX < box.left + edge ? -Math.ceil((box.left + edge - lastX) / 3)
+        : lastX > box.right - edge ? Math.ceil((lastX - (box.right - edge)) / 3) : 0;
+      if (!speed) return;
+      const before = scroller.scrollLeft;
+      scroller.scrollLeft += speed;
+      if (scroller.scrollLeft !== before) updateDrop();
+      scrollFrame = requestAnimationFrame(autoScroll);
+    };
+    const move = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== event.pointerId) return;
+      if (!(moveEvent.buttons & 1)) { finish(true); return; }
+      lastX = moveEvent.clientX;
+      if (!ghost && Math.abs(lastX - startX) < 4) return;
+      if (!ghost) begin();
+      ghost!.style.left = `${moveEvent.clientX}px`;
+      ghost!.style.top = `${moveEvent.clientY}px`;
+      updateDrop();
+      if (!scrollFrame) scrollFrame = requestAnimationFrame(autoScroll);
+    };
     const finish = (commit: boolean): void => {
-      th.removeEventListener('pointermove', move);
-      th.removeEventListener('pointerup', onUp);
-      th.removeEventListener('pointercancel', onCancel);
+      if (done) return;
+      done = true;
+      if (scrollFrame) cancelAnimationFrame(scrollFrame);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onCancel, true);
+      window.removeEventListener('blur', onCancel);
       window.removeEventListener('keydown', onKey, true);
+      th.removeEventListener('lostpointercapture', onLost);
       if (th.hasPointerCapture(event.pointerId)) th.releasePointerCapture(event.pointerId);
       document.body.classList.remove('column-dragging');
       ghost?.remove();
@@ -645,19 +680,24 @@ function languageHeader(language: string, col: number): HTMLTableCellElement {
       table.querySelectorAll('td.column-dragged').forEach(cell => cell.classList.remove('column-dragged'));
       if (commit && ghost && drop) moveLanguage(language, drop.target, drop.after);
     };
-    const onUp = (): void => finish(true);
+    const onUp = (upEvent: PointerEvent): void => { if (upEvent.pointerId === event.pointerId) finish(true); };
     const onCancel = (): void => finish(false);
+    // Capture lost without a pointerup reaching us (release outside the iframe): keep the
+    // drag alive on window listeners; the next move without the button pressed ends it.
+    const onLost = (): void => { if (!ghost) finish(false); };
     const onKey = (keyEvent: KeyboardEvent): void => {
       if (keyEvent.key !== 'Escape') return;
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       finish(false);
     };
-    th.setPointerCapture(event.pointerId);
-    th.addEventListener('pointermove', move);
-    th.addEventListener('pointerup', onUp);
-    th.addEventListener('pointercancel', onCancel);
+    try { th.setPointerCapture(event.pointerId); } catch { /* window listeners still track the drag */ }
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onCancel, true);
+    window.addEventListener('blur', onCancel);
     window.addEventListener('keydown', onKey, true);
+    th.addEventListener('lostpointercapture', onLost);
   });
   return th;
 }
@@ -792,8 +832,8 @@ function diagnostics(): string[] {
   if (!state.rows.length) errors.push('Genera locales o importa un file Excel');
   for (const frame of state.frames) {
     if (frame.managedRole === 'locale') errors.push(`${frame.name}: seleziona il MASTER per rieditare`);
-    if (frame.managedRole === 'master' && (state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage) !== state.primary) errors.push(`${frame.name}: la lingua principale del MASTER è ${frame.sourceLanguage}`);
-    try { normalizeLanguage(state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage); }
+    if (frame.managedRole === 'master' && frameSource(frame) !== state.primary) errors.push(`${frame.name}: la lingua principale del MASTER è ${frame.sourceLanguage}`);
+    try { normalizeLanguage(frameSource(frame)); }
     catch (error) { errors.push((error as Error).message); }
   }
   if (state.frames.length) errors.push(...namingErrors(state.frames.map((frame, index) => ({ ...nameContext(frame, index), label: frameLabel(frame) })), outputLanguages(), naming()));
@@ -886,6 +926,7 @@ element('reset-languages').addEventListener('click', () => {
   ensureLanguages(workbookLanguages());
   saveLanguageSettings();
   renderLanguages();
+  renderFrames();
   renderPreview();
   renderValidation();
 });
@@ -894,6 +935,7 @@ element<HTMLSelectElement>('primary-language').addEventListener('change', event 
   state.primary = (event.target as HTMLSelectElement).value;
   ensureLanguages([state.primary, state.primary.split('_')[0]]);
   saveLanguageSettings();
+  renderFrames();
   renderPreview();
   renderValidation();
 });
@@ -1026,6 +1068,7 @@ function applyPrefill(prefill: Prefill): void {
   saveLanguageSettings();
   renderNamePreviews();
   renderLanguages();
+  renderFrames();
   renderPreview();
   renderValidation();
 }
@@ -1171,7 +1214,6 @@ function acceptSelection(frames: FrameInfo[]): void {
     }
   }
   for (const frame of frames) {
-    if (!state.sourceLanguages.has(frame.id)) state.sourceLanguages.set(frame.id, frame.sourceLanguage);
     if (!state.baseNames.has(frame.id)) state.baseNames.set(frame.id, frame.baseName);
   }
   ensureLanguages(workbookLanguages());
@@ -1198,7 +1240,8 @@ onmessage = (event: MessageEvent<{ pluginMessage: PluginMessage }>) => {
     renderNamePreviews();
     state.openGroup = null;
     state.settingsLoaded = true;
-    ensureLanguages([...state.targets, state.primary, ...state.frames.map(frame => state.sourceLanguages.get(frame.id) ?? frame.sourceLanguage)]);
+    ensureLanguages([...state.targets, state.primary, ...state.frames.map(frame => frameSource(frame))]);
+    renderFrames();
     renderPreview();
     renderValidation();
   } else if (message.kind === 'selection') {
